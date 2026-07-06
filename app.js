@@ -6299,6 +6299,48 @@ function cgBoxMiniHTML(){ const row=(name,val)=>`<div class="cg-mini-row"><span>
     h+=rec.length?rec.map(x=>row(x.p.last||x.p.name,`${x.rec||0}-${x.recyd||0}`)).join(''):row('Receiving','—');
     return h+'</div>'; };
   return `<div class="cg-mini-split">${tbl(team(CG.away))}${tbl(team(CG.home))}</div>`; }
+// ---- LIVE BOX STRIP: the missing in-game stats, always on screen under the scorebug ----
+function cgTeamTotals(t,opp){
+  const mine=Object.values(CG.tally).filter(x=>t.roster.some(p=>p.id===x.p.id));
+  const oppD=Object.values(CG.tally).filter(x=>opp.roster.some(p=>p.id===x.p.id));
+  const sum=k=>mine.reduce((a,x)=>a+(x[k]||0),0);
+  const pass=sum('pyd'), rush=sum('ryd');
+  const to=oppD.reduce((a,x)=>a+(x.intc||0)+(x.fr||0),0);   // my giveaways = their takeaways
+  return {total:pass+rush, pass, rush, to};
+}
+function cgStatStripHTML(){
+  if(!CG||!CG.tally||!Object.keys(CG.tally).length) return '';
+  const h=team(CG.home), a=team(CG.away);
+  const side=t=>{ const b=cgBoxLines(t), qb=b.QB[0], rb=b.RB[0], rec=b.REC[0], tt=cgTeamTotals(t, t===h?a:h);
+    return `<div class="cg-ss-team"><div class="cg-ss-tot"><b>${t.abbr}</b> ${tt.total} yds <span class="muted">(${tt.pass} pass · ${tt.rush} rush)</span>${tt.to?` <span class="bad">${tt.to} TO</span>`:''}</div>
+      <div class="cg-ss-lines">${qb?`<span>${qb.p.last} ${qb.pcmp||0}/${qb.patt||0}, ${qb.pyd||0} yd${qb.ptd?`, ${qb.ptd} TD`:''}${qb.pint?`, ${qb.pint} INT`:''}</span>`:''}${rb?`<span>${rb.p.last} ${rb.ratt||0}-${rb.ryd||0}${rb.rtd?`, ${rb.rtd} TD`:''}</span>`:''}${rec?`<span>${rec.p.last} ${rec.rec||0}-${rec.recyd||0}${rec.rectd?`, ${rec.rectd} TD`:''}</span>`:''}</div></div>`; };
+  return `<div class="cg-statstrip">${side(a)}${side(h)}</div>`;
+}
+// ---- HALFTIME SHOW: quick trip around the league, grounded in each game's REAL drive log ----
+function cgHalfLeagueRows(){
+  if(!CG.league||!CG.league.length) return [];
+  return CG.league.slice(0,6).map(g=>{
+    let hs=0,as=0,hl=null;
+    (g.drives||[]).forEach(d=>{ if(d.q<=2){ hs=d.h; as=d.a; if(d.pts>0) hl=d; } });   // score + last scoring drive of the FIRST HALF, from the same log Game Center shows
+    const a=team(g.away), h=team(g.home);
+    const play=hl&&hl.plays&&hl.plays.length?stripHTML(String(hl.plays[hl.plays.length-1])):null;
+    return {a,h,as,hs,play,hlTeam:hl?team(hl.team):null};
+  }).filter(r=>r.a&&r.h);
+}
+function cgHalftimeShowHTML(){
+  const h=team(CG.home), a=team(CG.away);
+  const rows=cgHalfLeagueRows();
+  const lead=CG.hs===CG.as?`we're level at ${CG.hs}`:(CG.hs>CG.as?`${h.nick} up ${CG.hs}-${CG.as}`:`${a.nick} up ${CG.as}-${CG.hs}`);
+  let html=`<div class="cg-panel cg-halftime"><div class="cg-half-kick">🎙️ THE HALFTIME REPORT</div>
+    <p class="cg-half-lead"><b>MARV:</b> Thirty minutes in the books here — ${lead}. Let's take a quick spin around the league.</p>`;
+  if(rows.length){
+    html+=rows.map(r=>`<div class="cg-half-game"><div class="cg-half-score">${logoTag(r.a,16)} ${r.a.abbr} <b>${r.as}</b> · <b>${r.hs}</b> ${r.h.abbr} ${logoTag(r.h,16)} <span class="muted">HALF</span></div>${r.play?`<div class="cg-half-play">${esc(r.play)}</div>`:''}</div>`).join('');
+    const big=rows.slice().sort((x,y)=>(y.as+y.hs)-(x.as+x.hs))[0];
+    html+=`<p class="cg-half-lead"><b>DEION:</b> ${big&&(big.as+big.hs)>=30?`Keep an eye on ${big.a.abbr}-${big.h.abbr} — that one's turning into a track meet.`:`Defense traveling everywhere today, Marv.`} Now let's talk about YOUR ballgame — the second half decides it.</p>`;
+  } else html+=`<p class="cg-half-lead"><b>DEION:</b> Exhibition day — all eyes on this one. The second half decides it.</p>`;
+  html+=`</div>`;
+  return html;
+}
 function cgLeagueHTML(){ const ls=cgLeagueScores(); if(!ls.length)return '<div class="muted" style="font-size:12px">Exhibition game — no league slate today.</div>';
   return ls.map((g,i)=>{ const a=team(g.away),h=team(g.home),final=g.q==='FINAL',aw=g.as>=g.hs;
     const clk=final&&CG.league&&CG.league[i]&&CG.league[i].box;   // box score available once the game is final
@@ -6407,6 +6449,13 @@ function startCoachGame(homeAb, awayAb, opts){
   VIEW='field'; render();
 }
 function cgClockStr(v){ const s=Math.max(0,(v&&v.clock!=null)?v.clock:CG.clock); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+// the booth ALWAYS gives you the score after points go up — "17-13, Bills" — like a real broadcast
+function cgScoreCall(){ if(!CG) return '';
+  const h=team(CG.home), a=team(CG.away), hi=Math.max(CG.hs,CG.as), lo=Math.min(CG.hs,CG.as);
+  if(CG.hs===CG.as) return `We're all square at ${CG.hs}.`;
+  const ld=CG.hs>CG.as?h:a, tr=CG.hs>CG.as?a:h;
+  return (hi-lo)<=3? `${ld.abbr} ${hi}, ${tr.abbr} ${lo} — one-score game.` : (hi-lo)>=17? `${ld.nick} are pulling away, ${hi}-${lo}.` : `${ld.nick} lead it ${hi}-${lo}.`;
+}
 function cgWinProb(v){ // crude but fun
   const S=v||CG, diff=(CG.userSide==='h'?S.hs-S.as:S.as-S.hs);
   const left=(4-S.q)*900+S.clock; const t=left/3600;
@@ -7468,6 +7517,7 @@ function cgRenderTextCast(m){
   cgMaybeSpeak();
   const shell=el('div','cg-shell cg-textcast'); m.appendChild(shell);
   shell.innerHTML=cgScorebugHTML(home,away);
+  if(CG._snapped && !CG.over && !(CG.coin&&CG.coin.pending)) shell.insertAdjacentHTML('beforeend', cgStatStripHTML());   // live box strip — the game's stats, always on screen
   shell.insertAdjacentHTML('afterbegin', `<button class="cg-peek-btn" onclick="document.body.classList.toggle('cg-peek')" title="show / hide the franchise menu">\u2630</button>`);
   if(!CG._snapped && CG._prep && !CG.over) shell.insertAdjacentHTML('beforeend', cgPregameHTML());
   const seq=CG._renderSeq=(CG._renderSeq||0)+1, later=fn=>setTimeout(()=>{ if(!CG||CG._renderSeq!==seq) return; if(fn)fn(); },0);
@@ -7581,6 +7631,7 @@ function cgRenderTextCast(m){
     }
     // ── REVEAL: the play is over — verdict hero (color-flash + word + yards) · stat line · grade · Next ──
     shell.insertAdjacentHTML('beforeend', cgCelebrationHTML()+cgVerdictHeroHTML());
+    if(CG._halfShow && CG.q===3) shell.insertAdjacentHTML('beforeend', cgHalftimeShowHTML());   // the halftime report — around the league, from the real drive logs
     cgSpeakColor();   // the analyst's reaction lands now, on the frozen result
     const c=el('div','card cg-control-card cg-result-foot');
     c.innerHTML=`<div class="cg-statline">${cgResultStatLine()}</div>${CG.pat?'':(cgMomentumSwingHTML()+cgProcessGrade())}`
@@ -7867,7 +7918,11 @@ function cgBurn(result){ let t = (result==='incomplete'||result==='oob')?6 : ENG
   const tempo=cgEffTempo();
   if(tempo==='hurry') t=Math.round(t*0.64); else if(tempo==='chew' && result!=='incomplete' && result!=='oob') t=Math.round(t*1.25);
   CG.clock-=t;
-  if(CG.clock<=0){ CG.q++; if(CG.q<=4){ CG.clock=900; if(CG.q===3){ CG.poss = CG._kickoffReceiver==='h'?'a':'h'; CG.ballOn=25; CG.down=1; CG.toGo=10; CG.log.unshift('— Halftime —'); } } else { CG.clock=0; } } }
+  if(CG.clock<=0){ CG.q++; if(CG.q<=4){ CG.clock=900;
+    const sc=`${team(CG.away).abbr} ${CG.as}, ${team(CG.home).abbr} ${CG.hs}`;
+    if(CG.q===3){ CG.poss = CG._kickoffReceiver==='h'?'a':'h'; CG.ballOn=25; CG.down=1; CG.toGo=10; CG.log.unshift(`— Halftime — ${sc}`); CG._halfShow=1; }
+    else CG.log.unshift(`— End of Q${CG.q-1} — ${sc}`);
+  } else { CG.clock=0; } } }
 function cgStartPlayView(){ CG._playTok=(CG._playTok||0)+1; CG._colorAI=false; CG._animating=!(CG.autoAdv||CG._auto); CG._scoreView={poss:CG.poss,ballOn:CG.ballOn,down:CG.down,toGo:CG.toGo,q:CG.q,clock:CG.clock,hs:CG.hs,as:CG.as}; }
 function cgChangePoss(msg){ CG.poss = CG.poss==='h'?'a':'h'; CG.ballOn=100-CG.ballOn; CG.ballOn=ENG.clamp(CG.ballOn,1,99); CG.down=1; CG.toGo=10; if(msg)CG.log.unshift(msg); cgDriveBreather(); }
 function cgMissedFGSpot(ballOn){ return ENG.clamp(100-(ballOn+7),20,80); }
@@ -7877,13 +7932,13 @@ function cgScoreTD(){ if(CG.poss==='h')CG.hs+=6; else CG.as+=6; CG.pat=CG.poss;
 // the AI's extra-point decision (almost always kicks; goes for 2 only when the math demands it late)
 function autoPAT(){ const t=CG.pat, mine=(t==='h'?CG.hs-CG.as:CG.as-CG.hs);
   const go2 = CG.q>=4 && (mine===-2 || mine===1 || mine===5 || mine===-5) && ENG.rng()<0.6;
-  if(go2){ const ok=ENG.rng()<0.5; if(ok){ if(t==='h')CG.hs+=2; else CG.as+=2; } CG.log.unshift(`${cgTeam(t).abbr} two-point try ${ok?'GOOD':'no good'}.`); }
-  else { const ok=ENG.rng()<0.94; if(ok){ if(t==='h')CG.hs+=1; else CG.as+=1; } CG.log.unshift(`${cgTeam(t).abbr} extra point ${ok?'good':'MISSED'}.`); }
+  if(go2){ const ok=ENG.rng()<0.5; if(ok){ if(t==='h')CG.hs+=2; else CG.as+=2; } CG.log.unshift(`${cgTeam(t).abbr} two-point try ${ok?'GOOD':'no good'}. ${cgScoreCall()}`); }
+  else { const ok=ENG.rng()<0.94; if(ok){ if(t==='h')CG.hs+=1; else CG.as+=1; } CG.log.unshift(`${cgTeam(t).abbr} extra point ${ok?'good':'MISSED'}. ${cgScoreCall()}`); }
   CG.pat=null; cgKickoff(t);
 }
 function cgPAT(go2){ const t=CG.pat;
-  if(go2){ const ok=ENG.rng()<0.5; if(ok){ if(t==='h')CG.hs+=2; else CG.as+=2; } CG.log.unshift(`Two-point try ${ok?'GOOD':'no good'}.`); }
-  else { const ok=ENG.rng()<0.94; if(ok){ if(t==='h')CG.hs+=1; else CG.as+=1; } CG.log.unshift(`Extra point ${ok?'good':'MISSED'}.`); }
+  if(go2){ const ok=ENG.rng()<0.5; if(ok){ if(t==='h')CG.hs+=2; else CG.as+=2; } CG.log.unshift(`Two-point try ${ok?'GOOD':'no good'}. ${cgScoreCall()}`); }
+  else { const ok=ENG.rng()<0.94; if(ok){ if(t==='h')CG.hs+=1; else CG.as+=1; } CG.log.unshift(`Extra point ${ok?'good':'MISSED'}. ${cgScoreCall()}`); }
   CG.pat=null; CG.bumpMom=0; CG._scoreView=null; CG._animating=null; CG._moment=null; CG._lastVizScript=null;   // leave the TD beat → kick off to the next drive
   if(window._cgNextKey){ window.removeEventListener('keydown',window._cgNextKey); window._cgNextKey=null; }
   cgKickoff(t); if(typeof cgResetPlayClock==='function')cgResetPlayClock(); render();
@@ -7962,11 +8017,12 @@ function cgSnap(offOrDefKey){
       CG._lastVizScript=JSON.parse(JSON.stringify(CG._viz));
       CG._animMs=3400; cgCrowdBurst(ok?'big':'snap');
       if(ok){ if(CG.poss==='h')CG.hs+=3; else CG.as+=3; cgBurn('gain'); cgKickoff(CG.poss); } else { const spot=cgMissedFGSpot(CG.ballOn); cgBurn('gain'); CG.poss=CG.poss==='h'?'a':'h'; CG.ballOn=spot; CG.down=1; CG.toGo=10; }
+      const _fgText2=ok?_fgText+' '+cgScoreCall():_fgText;
       const fgTeach=ok?(pre.poss===CG.userSide?'Take the points and reset the game script.':'You held the drive to three. Now the offense has to answer the scoreboard.'):
         'Missed field goals are field-position plays. The defense takes over at the proper missed-kick spot.';
-      cgSetSpecialSnap(pre,`${dist}-yard field goal`,ok?'Good':'No good',fgTeach,_fgText);
-      if(_stAnimating){ CG._pendingResult={text:_fgText,color:_fgColor,moment:null,good:false,bad:false}; CG.lastText=`<b>${off.abbr}</b> field-goal unit on — a ${dist}-yard try…`; CG.lastColor=''; CG._moment=null; }
-      else { CG.lastText=_fgText; CG.lastColor=_fgColor; }
+      cgSetSpecialSnap(pre,`${dist}-yard field goal`,ok?'Good':'No good',fgTeach,_fgText2);
+      if(_stAnimating){ CG._pendingResult={text:_fgText2,color:_fgColor,moment:null,good:false,bad:false}; CG.lastText=`<b>${off.abbr}</b> field-goal unit on — a ${dist}-yard try…`; CG.lastColor=''; CG._moment=null; }
+      else { CG.lastText=_fgText2; CG.lastColor=_fgColor; }
       return cgAfter(); }
     if(CG.ballOn<58 && !desperate){ CG.lastCall=null;
       const _net=ENG.ri(35,48), _ret=ENG.ri(0,9);
@@ -8076,7 +8132,7 @@ function cgSnap(offOrDefKey){
     if(!/TOUCHDOWN|walks in|\bhouse\b|He's IN|six points|\bGONE\b/i.test(line)) line+=' '+((cgRadio()&&window.PBPGEN&&window.PBPGEN.radio)?fillTpl(rpick(window.PBPGEN.radio.td),{off:off.abbr}):ENG.pick(['TOUCHDOWN!','He\'s IN — touchdown!','Six points!']));
     const _tdColor=cgColor('td', def.abbr); cgEnrichColor('td',off,def,r,line); CG.log.unshift(`<b>${off.abbr} TD!</b> ${line}`);
     if(r.isPass){cgTally(tp.qb,{ptd:1});cgTally(target,{rectd:1});} else cgTally(carrier||tp.rb||tp.qb,{rtd:1});
-    cgScoreTD(); cgBurn(r.result); cgSetLastSnap(pre,off,def,offKey,defKey,r,line,true);
+    cgScoreTD(); line+=' '+cgScoreCall(); cgBurn(r.result); cgSetLastSnap(pre,off,def,offKey,defKey,r,line,true);
     if(_animating){ CG._pendingResult={text:line,color:_tdColor,moment:CG._moment,good:CG._good,bad:CG._bad}; CG.lastText=_preSnapTxt; CG.lastColor=''; CG._moment=null; CG._good=false; CG._bad=false; }
     else { CG.lastText=line; CG.lastColor=_tdColor; }
     return cgAfter(); }
@@ -8142,7 +8198,7 @@ function cgSpecial(sp){
     color=cgColor(ok?'fg_good':'fg_miss'); moment=ok?{kind:'FG',label:"IT'S GOOD! 🏈",c:'#46d39a'}:{kind:'FGMISS',label:'NO GOOD!',c:'#ff5d6c'};
     CG._viz={off:off.abbr,def:def.abbr,play:'fg',los:pre.ballOn,script:{kind:'fg',dist,ok,minT:1.2}};
     CG._animMs=3400; if(ok)cgCrowdBurst('big');
-    if(ok){ if(CG.poss==='h')CG.hs+=3; else CG.as+=3; cgBurn('gain'); cgKickoff(CG.poss); } else { const spot=cgMissedFGSpot(CG.ballOn); cgBurn('gain'); CG.poss=CG.poss==='h'?'a':'h'; CG.ballOn=spot; CG.down=1; CG.toGo=10; }
+    if(ok){ if(CG.poss==='h')CG.hs+=3; else CG.as+=3; cgBurn('gain'); cgKickoff(CG.poss); finalText+=' '+cgScoreCall(); } else { const spot=cgMissedFGSpot(CG.ballOn); cgBurn('gain'); CG.poss=CG.poss==='h'?'a':'h'; CG.ballOn=spot; CG.down=1; CG.toGo=10; }
     cgSetSpecialSnap(pre,`${dist}-yard field goal`,ok?'Good':'Missed',ok?'Bank the points. Now reset the kickoff situation.':'The miss gives the defense the ball at the missed-kick spot, not the old line of scrimmage.',finalText); }
   CG._lastVizScript=CG._viz?JSON.parse(JSON.stringify(CG._viz)):null;
   if(CG._viz&&CG._viz.script&&CG._animMs){ const _minT=Math.max(1.1,(CG._animMs/1000)-0.6); CG._viz.script.minT=_minT; if(CG._lastVizScript)CG._lastVizScript.script.minT=_minT; }
@@ -8171,6 +8227,7 @@ function cgAfter(){ if(CG.q>4 && CG.clock<=0 && !CG._scoreView){ return cgEndChe
 function cgNextPlay(){ if(!CG||!CG._scoreView) return;
   if(window._cgNextKey){ window.removeEventListener('keydown',window._cgNextKey); window._cgNextKey=null; }
   if(CG._pendingResult) cgCommitPendingResult();   // safety flush in case result was never revealed
+  CG._halfShow=null;   // the halftime report airs for one beat, then the second half rolls
   CG._scoreView=null; CG._animMs=null; CG._animating=null; CG._pendingRead=null; cgResetPlayClock();
   if(CG.q>4 && CG.clock<=0) return cgEndCheck(); save(true); render(); }
 window.cgNextPlay=cgNextPlay;
