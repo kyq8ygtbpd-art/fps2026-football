@@ -4776,7 +4776,7 @@ function renderAIGazette(m,s){
   else h+=gazetteQuoteBox();
   h+=`</div></div>`;
   if(s.feature&&s.feature.body){ const fe=s.feature;
-    h+=`<div class="gdiv">■ GAME OF THE WEEK ■</div><div class="feature"><div class="feat-kicker">${E(fe.kicker||'GAME OF THE WEEK')}</div><h3 class="feat-hd">${E(fe.headline)}</h3><div class="byline" style="text-align:center">By ${E(fe.byline||'Hank Mariucci')}${fe.dateline?` · <span class="dateline">${E(fe.dateline)}</span>`:''}</div>${fe.pull_quote?`<div class="pq" style="text-align:center;border:none;max-width:520px;margin:8px auto">${E(fe.pull_quote)}</div>`:''}<div class="gart drop feat-body">${E(fe.body)}</div></div>`; }
+    h+=`<div class="gdiv">■ ${E(fe.kicker||'GAME OF THE WEEK')} ■</div><div class="feature"><div class="feat-kicker">${E(fe.kicker||'GAME OF THE WEEK')}</div><h3 class="feat-hd">${E(fe.headline)}</h3><div class="byline" style="text-align:center">By ${E(fe.byline||'Hank Mariucci')}${fe.dateline?` · <span class="dateline">${E(fe.dateline)}</span>`:''}</div>${fe.pull_quote?`<div class="pq" style="text-align:center;border:none;max-width:520px;margin:8px auto">${E(fe.pull_quote)}</div>`:''}<div class="gart drop feat-body">${E(fe.body)}</div></div>`; }
   const stories=s.game_stories||(s.game_features||[]).map(f=>({headline:f.headline,body:f.body}));
   if(stories.length){ h+=`<div class="gdiv">■ THE GAMES ■</div>`; stories.forEach(st=>{ h+=`<div class="gstory"><h4 class="ghd">${E(st.headline)}</h4>${st.byline?`<div class="byline">By ${E(st.byline)}${st.dateline?` · <span class="dateline">${E(st.dateline)}</span>`:''}</div>`:''}${st.turning_point?`<p class="turning"><b>TURNING POINT —</b> ${E(st.turning_point)}</p>`:''}<p class="gart">${E(st.body)}</p>${st.pull_quote?`<div class="pq small">${E(st.pull_quote)}</div>`:''}</div>`; }); }
   const nb=s.notebook||[], wire=s.wire||{}, beat=s.beat_notes;
@@ -4925,6 +4925,8 @@ function sourcedGameFeatures(results,n){
 window.sourcedGameFeatures=sourcedGameFeatures;
 function sanitizeGazette(s){
   s=s||{};
+  // special editions (offseason / draft) carry no game coverage — don't backfill stale playoff recaps
+  if(/SPECIAL/i.test(s.edition_kicker||'')) { delete s.game_features; delete s.game_stories; return s; }
   const gf=sourcedGameFeatures(G.lastResults||[],3);
   if(gf.length){ s.game_features=gf;
     if(Array.isArray(s.game_stories)){ s.game_stories=s.game_stories.map((st,i)=>gf[i]?Object.assign({},st,{headline:st.headline||gf[i].headline,body:gf[i].body}):st); }
