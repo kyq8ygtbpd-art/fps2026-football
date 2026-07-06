@@ -27,6 +27,7 @@ const ENG = (() => {
   // attribute accessor with graceful fallback to OVR-derived value for players w/o full attrs
   function A(p,key){ const a=p.attrs; let v=(a&&a[key]!=null)?a[key]:clamp(p.ovr-8,20,99);
     if(p._hurt){ v=clamp(Math.round(v*(1-p._hurt.drop)+(p._hurt.hit&&p._hurt.hit[key]||0)),5,99); }   // playing hurt = lower EFFECTIVE attrs for this game only
+    if(p._rust>0 && !(p.out>0)){ v=clamp(Math.round(v*(1-Math.min(0.10,p._rust*0.022))),5,99); }      // first games back from a major injury: not himself yet (decays per game played)
     return v; }
   const avail=p=>!(p.out>0)&&!p.ir&&!p.benched;   // injured/IR/benched-for-development players don't count toward ratings/box
   function best(team,pos,n){ return team.roster.filter(p=>p.pos===pos&&avail(p)).sort((a,b)=>b.ovr-a.ovr).slice(0,n); }
@@ -156,11 +157,23 @@ const ENG = (() => {
   };
   function injuryBody(p, conc, severe){
     if(conc) return 'head';
-    if(severe) return pick(INJ_BODY.severe);
+    if(severe){
+      // real-world major mix: ACL is the most common season-ender (~2 per team-season), Achilles
+      // skews to age 27+ (and spiked league-wide on turf), torn pec lives in the trenches
+      const trench=['T','G','C','DT','DE'].includes(p.pos);
+      const rows=[['ACL',10],['Achilles',(p.age>=27?6:3)],['fractured ankle',4],['torn pec',trench?4:1.5],['neck',1.5]];
+      let s=rows.reduce((a,r)=>a+r[1],0), roll=rng()*s;
+      for(const r of rows){ roll-=r[1]; if(roll<=0) return r[0]; }
+      return 'ACL';
+    }
     if(['T','G','C','DT','DE'].includes(p.pos)) return pick(INJ_BODY.trench);
     if(['WR','CB','S','RB'].includes(p.pos)) return rng()<0.55?pick(INJ_BODY.soft):pick(INJ_BODY.joint);
     return rng()<0.5?pick(INJ_BODY.soft):pick(INJ_BODY.joint);
   }
+  // per-player durability (mirrors app.js ensureDurability): endurance + a stable per-player roll − age
+  function durabilityOf(p){ if(p.durability!=null) return p.durability;
+    const en=(p.attrs&&p.attrs.EN)||62; let d=50+(en-62)*0.7+((((p.id||1)*2654435761)>>>0)%25-12); d-=Math.max(0,((p.age||25)-30))*1.4;
+    p.durability=clamp(Math.round(d),12,95); return p.durability; }
   function gameInjuries(home, away, rules){
     rules=rules||{}; if(rules.injuries===false) return [];
     const wkLeft=rules.weeksLeft||10; const out=[];
@@ -170,7 +183,11 @@ const ENG = (() => {
         const dur=(100-A(p,'EN'))/100, wear=(p.wear||0)/100, usage=(HIGH_CONTACT.has(p.pos)?1.12:0.72)*(1+load*0.28), agi=(p.age>=31?1.10:1);
         const freqM=clamp(0.45+(rules.injFreq==null?50:rules.injFreq)/100*1.1,0.2,1.8);   // injury-frequency slider (50=default 1.0)
         const sevM=0.55+(rules.injSev==null?50:rules.injSev)/100*0.9;                       // injury-severity slider (50=default 1.0)
-        const risk=(0.0050 + dur*0.0108 + wear*0.0155)*usage*agi*freqM*(team._injMod||1);   // ~1.7× base rate (more injuries by default); turf + training facility still reduce soft-tissue risk, and the Rules injury-frequency slider still scales on top
+        // durability tier (Ironman ↔ Glass) + the post-major re-injury window scale personal risk —
+        // real pattern: soft-tissue recurrence ~30%, prior-ACL players re-injure at ~2× for ~2 years
+        const durF=clamp(1.35-durabilityOf(p)/100*0.8,0.7,1.35);
+        const reinjF=(p._reinjury&&p._reinjury.mult)||1;
+        const risk=(0.0058 + dur*0.0118 + wear*0.0155)*usage*agi*freqM*durF*reinjF*(team._injMod||1);   // calibrated vs real games-missed data (Career Lab: ~13/team-season with ~0.8 season-enders); turf + training facility still reduce soft-tissue risk, and the Rules injury-frequency slider still scales on top
         if(rng() < risk){ const conc=rng()<0.15; const sev=rng()/sevM;   // higher severity pushes more into the worse tiers + longer
           let wks, reason='injury', career=false, severe=false;
           if(sev<0.005 && (p.age>=32 || (p.concussions||0)>=3)){ career=true; reason='career-ending injury'; wks=99; }
@@ -273,6 +290,16 @@ const ENG = (() => {
     if(p.temperament==null){ const a=p.attrs||{}; p.temperament=clamp((a.IN||60)*0.5 + (a.DI||62)*0.4 + ri(-14,14),15,99); }
     return p;
   }
+  // POSITION AGE CURVES — grounded in NFL aging studies (nflfastR / PFF play-level aging work):
+  // RBs and CBs peak earliest and fall hardest (the real "RB cliff" at ~27-28), WRs/EDGE peak
+  // mid-20s, the trenches hold to ~31, QBs plateau deep into their 30s, specialists last longest.
+  //   dev = last age of the growth window · prime = last age of the plateau · rate = decline steepness
+  const AGE_CURVE={ QB:{dev:26,prime:33,rate:0.9}, RB:{dev:24,prime:26,rate:1.8}, FB:{dev:24,prime:27,rate:1.3},
+    WR:{dev:25,prime:28,rate:1.25}, TE:{dev:26,prime:29,rate:1.1},
+    T:{dev:26,prime:31,rate:1.0}, G:{dev:26,prime:31,rate:1.0}, C:{dev:26,prime:32,rate:0.95},
+    DE:{dev:25,prime:28,rate:1.2}, DT:{dev:25,prime:29,rate:1.1}, OLB:{dev:25,prime:28,rate:1.2}, ILB:{dev:24,prime:28,rate:1.3},
+    CB:{dev:24,prime:27,rate:1.5}, S:{dev:25,prime:28,rate:1.2}, K:{dev:27,prime:37,rate:0.7}, P:{dev:27,prime:37,rate:0.7} };
+  function ageCurve(pos){ return AGE_CURVE[pos]||{dev:25,prime:29,rate:1.1}; }
   // offseason development — NEURAL: NN.dev maps age/room/work-ethic/coaching/role/market-PRESSURE -> growth or decline.
   // This is where prospects boom, bust, or crack under big-market spotlight.
   function develop(p,t,rules){
@@ -280,7 +307,8 @@ const ENG = (() => {
     const pc=posCoach(t,p.pos), coachF=clamp((pc-58)/40,0,1);
     const pot = p.pot!=null ? p.pot : (p.pot = clamp(p.ovr + ri(-2,10) - Math.floor((p.age-22)*0.7), 50, 99));
     const a=p.attrs||{};
-    const young = p.age<=25 || (p.lateBloom && p.age<=29), dev=(p.seasons||0)<=3;   // late bloomers (the Brady arc) keep climbing into their late 20s
+    const curve=ageCurve(p.pos);
+    const young = p.age<=curve.dev || (p.lateBloom && p.age<=curve.dev+4);   // late bloomers (the Brady arc) keep climbing past the normal window
     // THE SYSTEM (Walsh/Belichick): an elite, STABLE coaching staff develops players beyond their grade.
     const cc=t.coach||{};
     const sysF = clamp(((cc.ovr||70)-78)/18,0,1) * clamp(((cc.szns||0)-2)/5,0,1);   // quality × tenure (0 for fresh/churned staffs)
@@ -295,15 +323,38 @@ const ENG = (() => {
     } else { signal = p.age<=24?0.66:p.age<=28?0.52:p.age<=31?0.46:0.32; }
     // map signal (0..1, .5=neutral) to a rating delta (+growth / -decline), with a little career noise
     let d = Math.round((signal-0.5)*12) + ri(-1,1);
+    // SOPHOMORE SLUMP — a rookie who seized a starting job regresses about a third of the time
+    // (the real Y2 pattern: the league adjusts, the film catches up); makeup fights it off, and
+    // top-2-round picks slump less (they're closer to their true talent than a Day-3 surprise).
+    let slump=false;
+    const slumpCand=(p.seasons||0)===1 && p.draftGrade!=null && !!p.starter;
+    if(slumpCand){
+      const slumpP=clamp(0.34-(p.workEthic-60)/220-(p.temperament-60)/320-((p.draftRound||4)<=2?0.08:0),0.08,0.50);
+      if(rng()<slumpP){ slump=true; d=Math.min(d,0)-ri(1,3); p._sophSlump=true; }
+    }
+    // SECOND-YEAR LEAP — the biggest average improvement of any career transition (real NFL pattern):
+    // a rookie season of real exposure converts to growth, more so for starters who put in the work.
+    if(!slump && (p.seasons||0)===1 && p.ovr<effPot){ d += 1 + ((p.starter||(p._reps||0)>=6) ? ri(0,2) : 0) + (p.workEthic>=70?ri(0,1):0); }
     // hidden bust/boom: a high bustRisk drags growth; surviving early years near ceiling unlocks the rest
     if(p.bustRisk){ d -= (p.bustRisk>0.6 && young ? ri(1,3) : p.bustRisk>0.4 && young ? ri(0,2) : 0); }
+    // BUST COLLAPSE — the real bust pattern isn't a slow fade, it's a flame-out: a risky early pick
+    // who hasn't outgrown his draft grade loses the league's benefit of the doubt (and his job) fast.
+    // Calibrated so ~20-30% of first-rounders genuinely fail by year 3 (the real R1 bust rate) —
+    // this is what makes drafting bad makeup actually COST something and scouting worth paying for.
+    if(young && (p.bustRisk||0)>0.45 && (p.seasons||0)>=1 && (p.seasons||0)<=4
+       && p.draftGrade!=null && p.ovr<=p.draftGrade+4 && rng()<0.40){ d -= ri(2,5); p._bustDrop=true; }
     d -= (p.troubled?Math.min(2,p.troubled):0);
     if(p.concussions>=2 && p.age>=30) d-=1;
-    if(p.ovr>=effPot && p.age>24) d=Math.min(d,0);             // can't exceed (system-raised) ceiling once aging
-    if(young && p.ovr<effPot && d<0 && p.workEthic>70 && press<0.3) d=Math.max(d,-1);  // grinders rarely crater young
+    // INJURY SCARS — accumulated major injuries (ACL/Achilles class) erode development and steepen
+    // decline once past the growth window (players with multiple majors age visibly faster).
+    if((p._scars||0)>0 && p.age>curve.dev) d -= Math.min(2, Math.ceil(p._scars*0.5));
+    // POSITIONAL AGING — decline scales with how far past the positional prime he is
+    if(p.age>curve.prime) d -= Math.min(5, Math.ceil((p.age-curve.prime)*0.6*curve.rate));
+    if(p.ovr>=effPot && p.age>curve.dev-1) d=Math.min(d,0);    // can't exceed (system-raised) ceiling once aging
+    if(young && p.ovr<effPot && d<0 && p.workEthic>70 && press<0.3 && !slump) d=Math.max(d,-1);  // grinders rarely crater young
     const facF=clamp((t.stadium&&t.stadium.upgrades&&t.stadium.upgrades.training||0)/3,0,1);   // training-facility tier (0..1)
     if(young && p.ovr<effPot && p.workEthic>=52) d+=1 + (facF>=0.66 && rng()<facF ? 1 : 0);   // young talent rises reliably; a top training facility gives an extra dev edge
-    if(p.age>=30 && p.age<=33 && p.ovr>=82) d=Math.max(d,-2);  // stars age gracefully (no cliff) → cores stay elite for years
+    if(p.age<=curve.prime+2 && p.age>=29 && p.ovr>=82) d=Math.max(d,-2);  // stars age gracefully WITHIN their positional window (no artificial RB immortality)
     if(young && p.ovr<effPot && p.workEthic>=58 && (p.bustRisk||0)<0.6){ d += Math.min(3, Math.floor((effPot-p.ovr)/7)); }   // blue-chips with the makeup climb to their ceiling → homegrown stars
     if(sysF>0.45 && young && p.ovr<effPot) d+=1;               // the system accelerates the development of its young players
     if(sysF>0.55 && young && p.ovr>=pot-1 && p.ovr<99 && rng()<0.16) p.pot=clamp(p.pot+1,50,99);   // the system unlocks another level — permanently (a star is made)
@@ -311,11 +362,19 @@ const ENG = (() => {
     d=clamp(d,-9,10);
     p.ovr=clamp(p.ovr+d,40,99);
     if(p.attrs){ const dom=DEV_ATTRS[p.pos]||['ST','IN']; dom.forEach(k=>{ if(p.attrs[k]!=null) p.attrs[k]=clamp(p.attrs[k]+d,25,99); }); p.attrs.OVR=p.ovr; }
+    if(p._reinjury && --p._reinjury.seasons<=0) delete p._reinjury;   // the elevated re-injury window closes with time
     p._lastDev=d; p._lastPress=press;                          // surfaced by the franchise UI / crack events
+    // CAREER LAB instrumentation (calibration harness only — window.LAB is never set in normal play)
+    if(typeof window!=='undefined' && window.LAB && window.LAB.dev){
+      window.LAB.dev.push({seasons:p.seasons||0,pos:p.pos,age:p.age,ovr:p.ovr,d,slump:!!p._sophSlump,cand:slumpCand,bustDrop:!!p._bustDrop});
+    }
     return d;
   }
   // a player's effective retirement age drops with accumulated concussions (CTE / early exits)
-  function retireAge(p){ return 38 - Math.min(5, (p.concussions||0)); }
+  // a player's effective retirement horizon: positional (RBs walk away years before QBs/kickers),
+  // shortened by accumulated concussions and by major-injury scars (bodies give out early)
+  function retireAge(p){ const c=ageCurve(p.pos);
+    return clamp(c.prime+7 - Math.min(5,(p.concussions||0)) - Math.min(3,(p._scars||0)), 27, 43); }
 
   // ---- play-by-play: a drive-by-drive account consistent with the final score ----
   function decompose(pts){ // -> scoring values; safeties are rare, not arithmetic glue for normal scores
@@ -655,7 +714,7 @@ const ENG = (() => {
     starters, teamOff, teamDef, teamOvr, unitRtg, grade,
     passOff, rushOff, passDef, rushDef, awardScore, POSGRP, playByPlay,
     ensureBrain, disposition, updateMotivation, offField,
-    ensureStaff, posCoach, develop, ensureTraits, retireAge, coachName, INJ_TYPES, injClass, pickInjType,
+    ensureStaff, posCoach, develop, ensureTraits, retireAge, ageCurve, coachName, INJ_TYPES, injClass, pickInjType,
     simGame, gameInjuries, buildSchedule, attendancePct, weeklyFinance, suitesRevenue, clubsRevenue,
     reactToResult, teamMorale, playerValue, pickValue, evalTrade, needs };
 })();

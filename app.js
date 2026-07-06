@@ -817,8 +817,10 @@ function enrichProspect(p, force){
   if(p.temperament!=null && !force) return p;
   p.workEthic = ENG.clamp(ENG.ri(34,96) + (p.grade>=88?ENG.ri(-12,4):0), 18, 99);   // some elite talents coast
   p.temperament = ENG.clamp(ENG.ri(28,93), 15, 99);                                  // poise under the spotlight
-  // true ceiling vs the board — top of the class gets real blue-chip upside so each draft mints future stars.
-  const ceilTail = p.grade>=82 ? ENG.ri(5,17) : p.grade>=76 ? ENG.ri(2,15) : p.grade>=66 ? ENG.ri(-3,13) : ENG.ri(-9,11);
+  // true ceiling vs the board — top of the class gets real blue-chip upside so each draft mints future stars,
+  // and Day-3 grades get a draft-and-develop tail (real: ~20-25% of R4-5 picks become starters — the board
+  // is far noisier at the bottom than the consensus admits).
+  const ceilTail = p.grade>=82 ? ENG.ri(5,17) : p.grade>=76 ? ENG.ri(2,15) : p.grade>=66 ? ENG.ri(-3,13) : ENG.ri(-9,11)+ENG.ri(0,5);
   p._ceiling = ENG.clamp(p.grade + ceilTail, 50, 99);
   const makeup=(p.workEthic+p.temperament)/2;
   p.bustRisk = ENG.clamp(0.52 - (makeup-55)/95 + (p.grade>=85?0.12:0) - (p._ceiling-p.grade)/60, 0.05, 0.85);
@@ -863,7 +865,9 @@ function normalizeProspect(p,i,season,opts){
 function normalizeProspectBoard(){ if(!G||!G.prospects) return; const used=new Set(), firstSeen={};
   G.prospects=G.prospects.map((p,i)=>{ const fn=p.first||String(p.name||'').split(' ')[0]||''; const repeat=(firstSeen[fn]||0)>=2; firstSeen[fn]=(firstSeen[fn]||0)+1;
     return normalizeProspect(p,i,G.season,{freshName:p._nameCal!==PROSPECT_CAL_V||repeat,usedNames:used}); }).sort((a,b)=>b.grade-a.grade); }
-function rookieOverall(prospect){ const cap=prospect.pos==='QB'?88:ROOKIE_MAX_OVR; return ENG.clamp((prospect.grade||60)+ENG.ri(-3,0),38,cap); }
+// entry OVR carries REAL draft noise (grade is the board's guess, not the truth) — wider than the
+// old ±3 band so scouting misses actually show up on the field, skewed slightly low (rookie transition)
+function rookieOverall(prospect){ const cap=prospect.pos==='QB'?88:ROOKIE_MAX_OVR; return ENG.clamp((prospect.grade||60)+ENG.ri(-5,3),38,cap); }
 // each year's class keeps a realistic position/grade/school SHAPE but gets FRESH names + a class-strength wobble,
 // so no two draft classes (or Heisman races) ever repeat across a long career
 function makeProspectClass(season){ const used=new Set();
@@ -933,6 +937,40 @@ function collegeHeismanScore(p){
   else if(pos==='WR'||pos==='TE') prod=s.recYds*0.034+s.recTd*8+s.rec*0.35;
   else prod=s.tkl*0.22+s.sack*9+s.int*11+s.pbu*2.2;
   return Math.round(prod+(p.grade||60)*0.45+(c.heat||0)*0.35+(c.stock||0)*1.5);
+}
+// ---- DRAFT-TIME COLLEGE SIGNAL — production vs grade + declare age shape the hidden outcome traits.
+// Real draft analytics: college production relative to draft capital predicts hits — production-backed
+// prospects bust less, "workout warriors" (tools over tape) bust more, young declares carry more
+// growth runway, and seniors are safer but closer to their ceiling.
+function collegeProdRaw(p){
+  const s=(p.college&&p.college.stat)||{}; if(!s.g) return null;
+  const pos=p.pos; let prod=0;
+  if(pos==='QB') prod=s.passYds*0.020+s.passTd*7-s.int*5+s.rushYds*0.012+s.rushTd*4;
+  else if(pos==='RB'||pos==='FB') prod=s.rushYds*0.030+s.rushTd*7+s.recYds*0.012;
+  else if(pos==='WR'||pos==='TE') prod=s.recYds*0.034+s.recTd*8+s.rec*0.35;
+  else if(['T','G','C'].includes(pos)) prod=s.pancake*1.4-s.sacksAllowed*6;
+  else prod=s.tkl*0.22+s.sack*9+s.int*11+s.pbu*2.2;
+  return prod/Math.max(1,s.g);   // per-game rate, so short seasons aren't punished
+}
+function finalizeCollegeSignal(){
+  if(!G||!G.prospects) return;
+  const byPos={};
+  G.prospects.forEach(p=>{ const v=collegeProdRaw(p); if(v==null) return; (byPos[p.pos]=byPos[p.pos]||[]).push({p,v}); });
+  Object.values(byPos).forEach(rows=>{
+    if(rows.length<6) return;   // need a real positional sample to z-score against
+    const mean=(a,f)=>a.reduce((x,r)=>x+f(r),0)/a.length;
+    const mv=mean(rows,r=>r.v), sv=Math.sqrt(mean(rows,r=>(r.v-mv)*(r.v-mv)))||1;
+    const mg=mean(rows,r=>r.p.grade||60), sg=Math.sqrt(mean(rows,r=>((r.p.grade||60)-mg)*((r.p.grade||60)-mg)))||1;
+    rows.forEach(({p,v})=>{
+      if(p._sigDone) return; p._sigDone=true;
+      const sig=(v-mv)/sv-((p.grade||60)-mg)/sg;   // produced above/below what the board grade says
+      if(sig>=0.6){ p.bustRisk=ENG.clamp((p.bustRisk||0.3)*0.78,0.04,0.85); p._ceiling=ENG.clamp((p._ceiling||p.grade)+ENG.ri(0,2),50,99); p.prodBacked=true; }
+      else if(sig<=-0.6){ p.bustRisk=ENG.clamp((p.bustRisk||0.3)+0.10+ENG.rng()*0.08,0.05,0.88); p.toolsy=true;
+        if(p.bustRisk>0.55) p.archetype='boom'; }
+      if((p.age||22)<=21){ p._ceiling=ENG.clamp((p._ceiling||p.grade)+ENG.ri(1,3),50,99); }                                     // early declare: runway
+      else if((p.age||22)>=23){ p._ceiling=ENG.clamp((p._ceiling||p.grade)-ENG.ri(0,2),50,99); p.bustRisk=ENG.clamp((p.bustRisk||0.3)*0.88,0.04,0.85); }   // senior: safer, capped
+    });
+  });
 }
 function ncaaStoryFor(p,kind){
   const c=p.college||{}, line=collegeStatLine(p), dir=(c.stock||0)>=4?'rising':(c.stock||0)<=-4?'sliding':'holding';
@@ -1370,6 +1408,7 @@ function advanceWeek(opts){
       [h,a].forEach(tm=>{ const uu=(tm.stadium&&tm.stadium.upgrades)||{}; tm._injMod=ENG.clamp(1-(uu.turf||0)*0.04-(uu.training||0)*0.03,0.83,1); });
       // injuries — wear-scaled, with season-ending & career-ending tiers
       ENG.gameInjuries(h,a,injRules).forEach(inj=>{ const tm=team(inj.team), isU=inj.team===USER, pl=tm.roster.find(x=>x.id===inj.id);
+        if(window.LAB&&LAB.inj) LAB.inj.push({season:G.season,pos:inj.pos,wks:inj.weeks,sev:!!inj.severe,car:!!inj.career,conc:!!inj.concussion,body:inj.body||''});   // career-lab calibration hook
         if(inj.career){ if(pl){ tm.roster=tm.roster.filter(x=>x.id!==inj.id); processRetirement(pl,tm); }
           addNews('INJURY',`💔 ${inj.name} (${inj.pos}, ${tm.city}) suffers a CAREER-ENDING injury and is forced to retire.`);
           if(window.VOICES) VOICES.feedPush({h:'@AdamMortensen',n:'Adam Mortensen',v:true,c:'#1d9bf0'},`💔 Heartbreak: ${inj.name} (${inj.pos}, ${tm.abbr}) suffers a career-ending injury. An emotional locker room.`,'NEWS',inj.ovr>=82); }
@@ -1393,6 +1432,8 @@ function advanceWeek(opts){
           const txt=`${p.name} (${p.pos}) has ended his holdout and reported to ${t.city} — the two sides found common ground.`; recordArc(p,'RESOLVE',txt); addNews('RESOLVE',txt); }
         else if(p.ir){ if(p.injury){ p.injury.notes=p.injury.notes||[]; p.injury.notes.unshift(`Medically cleared in week ${G.week+1}; still on IR until activated.`); } addNewsIf(t.abbr===USER,'INJURY',`${p.name} (${p.pos}) is medically cleared but remains on IR until activated.`); }
         else { p.outReason=null; if(p.injury) p.injury.clearedWeek=G.week+1; addNewsIf(t.abbr===USER,'INJURY',`${p.name} (${p.pos}) is cleared to return for ${t.city}.`); } } }); });
+    // RUST shakes off with live reps: every healthy game week burns one week of the comeback window
+    G.teams.forEach(t=>{ if(!playing.has(t.abbr)) return; t.roster.forEach(p=>{ if(p._rust>0 && !(p.out>0) && !p.ir) p._rust--; }); });
     // stadium construction advances a week BEFORE finances (completed projects pay off immediately)
     G.teams.forEach(t=>{ try{ tickStadiumProjects(t); }catch(e){} });
     // finances for everyone (half home each week approx) — apply=true pays down stadium debt
@@ -2338,7 +2379,8 @@ function injStatusInfo(s){ return ({PROBABLE:{l:'Probable',c:'#46d39a'},QUESTION
 function pCanPlay(p){ if(!p) return false; if(p._sitWk===G.week) return false; if(p._playHurt===G.week) return true; return !(p.out>0)&&!p.ir&&!p.benched; }
 function registerInjury(tm, p, inj){
   if(!tm||!p||!inj) return;
-  const key = inj.career?'achilles' : inj.severe?'knee_acl' : inj.concussion?'concussion' : (ENG.pickInjType?ENG.pickInjType(p.pos):'ankle');
+  const key = (inj.severe||inj.career) ? (inj.body==='Achilles'?'achilles':'knee_acl')
+    : inj.concussion?'concussion' : (ENG.pickInjType?ENG.pickInjType(p.pos):'ankle');
   const T=(ENG.INJ_TYPES&&ENG.INJ_TYPES[key])||{label:'injury',band:'WK',hit:{}};
   const band=inj.career?'CAREER':inj.severe?'SEASON':T.band;
   const severe=inj.career?'Career-ending':inj.severe?'Season-ending':key==='concussion'?'Concussion':'Week-to-week';
@@ -2348,6 +2390,27 @@ function registerInjury(tm, p, inj){
     aggravations:0, playable:false, status:'OUT', playedThru:0,
     season:G.season,week:G.week+1,team:tm.abbr,ir:false,irWeek:null,usageLoad:inj.usageLoad||p._gameUsageRisk||0,wear:inj.wear==null?Math.round(p.wear||0):inj.wear,notes:[]};
   p.ir=false;
+  // PERMANENT DAMAGE — a major (season/career-tier) injury leaves a scar. Real NFL pattern:
+  // ACL ≈ 9-12mo out, ~80% return but many below prior level for a year; Achilles is worse and
+  // burst positions (RB/WR/CB/EDGE) lose the most; injuries after ~28 cost more and re-injury
+  // risk stays elevated for ~2 seasons. Modeled as: permanent SP/AC/AG + OVR loss (scaled by
+  // injury type, position class, age), durability loss, a multi-game RUST window on return,
+  // and a re-injury multiplier that develop() ages off.
+  if(band==='SEASON'||band==='CAREER'){
+    p._scars=(p._scars||0)+1;
+    const speedPos=['RB','WR','CB','S','OLB','DE'].includes(p.pos);
+    const sev = key==='achilles'?1.4 : key==='knee_acl'?1.0 : 0.7;                  // Achilles > ACL > other majors
+    const ageF = p.age>=29?1.5 : p.age>=26?1.1 : 0.85;                              // older bodies heal worse
+    const burst=Math.max(1,Math.round(ENG.ri(1,2)*sev*ageF*(speedPos?1.25:0.75)));  // burst attrs take the hit
+    if(p.attrs){ ['SP','AC','AG'].forEach(k=>{ if(p.attrs[k]!=null) p.attrs[k]=ENG.clamp(p.attrs[k]-burst,25,99); }); }
+    const ovrHit=ENG.clamp(Math.round(sev*ageF*(speedPos?2:1)),1,4);
+    p.ovr=ENG.clamp(p.ovr-ovrHit,40,99); if(p.attrs)p.attrs.OVR=p.ovr;
+    ensureDurability(p); p.durability=ENG.clamp(p.durability-ENG.ri(6,12),8,95);
+    p._rust=ENG.ri(3,5);                       // first games back he isn't himself — decays as he plays
+    p._reinjury={key, mult:1.6, seasons:2};    // elevated re-injury window (closed by develop())
+    p.injury.scar={burst,ovrHit};
+    recordArc(p,'INJURY',`Major ${p.injury.body} — the kind of injury a career carries. Burst -${burst}.`);
+  }
   recordArc(p,'INJURY',`${severe} ${p.injury.body} injury; out ${inj.weeks} week${inj.weeks!==1?'s':''}.`);
 }
 // before THIS week's game: stamp a transient _hurt (lower effective attrs) on any player the coach chose to gut out
@@ -2368,9 +2431,9 @@ function rollAggravation(t){ if(!t) return; t.roster.forEach(p=>{ if(p._playHurt
       addNewsIf(t.abbr===USER,'INJURY',`💪 ${p.name} (${p.pos}) gutted out the ${p.injury.label||'injury'} and held up. Warrior stuff.`); }
     p._playHurt=null; }); }
 function injurySummary(p){
-  if(!p||(!p.out&&!p.ir&&!p.injury)) return 'Healthy';
+  if(!p||(!p.out&&!p.ir&&!p.injury)) return (p&&p._scars)?`Healthy — ${p._scars} major injur${p._scars>1?'ies':'y'} on the résumé`:'Healthy';
   const i=p.injury||{}, body=i.body||'undisclosed';
-  if(!(p.out>0)&&!p.ir) return i.body?`Healthy - recent ${body}`:'Healthy';
+  if(!(p.out>0)&&!p.ir) return p._rust>0?`Back from ${body} — knocking off the rust (${p._rust} wk)`:(i.body?`Healthy - recent ${body}`:'Healthy');
   if(p.ir&&p.out<=0) return `IR eligible - ${body}`;
   return `${injuryTypeLabel(p)} · ${body}${p.out>0?` · ${p.out} wk`:''}`;
 }
@@ -2844,11 +2907,7 @@ function runDraft(){
       if(owner.abbr===USER) prospect=scoutedProspects(owner,1)[0]||G.prospects[0];
       else { const nd=ENG.needs(owner); prospect=G.prospects.slice(0,8).sort((a,b)=>(b.grade+(nd[b.pos]||0)*0.3)-(a.grade+(nd[a.pos]||0)*0.3))[0]; }
       const i=G.prospects.indexOf(prospect); G.prospects.splice(i,1);
-      const ovr=rookieOverall(prospect);
-      const np={id:prospect.id,first:prospect.first,last:prospect.last,name:prospect.name,pos:prospect.pos,age:prospect.age,ovr,num:jerseyNumber(owner,prospect.pos),attrs:Object.assign({},prospect.attrs,{OVR:ovr}),starter:false,depth:9,morale:70,salary:ENG.round1(Math.max(0.9,(8-prospect.projRound))*1.4),years:4,rookie:true,pot:ENG.clamp(ovr+ENG.ri(2,14),50,99),seasons:0,peak:ovr,
-        ht:prospect.ht,wt:prospect.wt,t40:prospect.t40,TP:prospect.TP,TA:prospect.TA,home:prospect.home,college:prospect.college||prospect.school};
-      if(window.PHYS) PHYS.backfill(np);   // carry the scouted combine numbers; backfill is idempotent (fills only what's missing)
-      owner.roster.push(np);
+      owner.roster.push(buildRookie(prospect, owner, {round, overall:(round-1)*slots.length+slots.indexOf(slot)+1, year:draftYear}));
       if(owner.abbr===USER) addNews('DRAFT',`R${round}: ${owner.city} draft ${prospect.name} (${prospect.pos}, ${prospect.school})${owner!==slot?` — via ${slot.abbr}`:''}.`);
       made++;
     });
@@ -2957,7 +3016,11 @@ function scoutEstimate(p,t){
   const range=lvl>=5?1:ENG.clamp(Math.round(sigma*shrink)+1,2,16);
   const lo=ENG.clamp(est-range,40,ROOKIE_MAX_OVR), hi=ENG.clamp(est+range,40,ROOKIE_MAX_OVR);
   const conf=['Public','Thin','Area','Position','Cross-check','Board lock'][lvl]||'Public';
-  return {lvl,level:lvl,tier,est,lo,hi,range,conf,score:lvl>=5?(p.grade||est):est};
+  const out={lvl,level:lvl,tier,est,lo,hi,range,conf,score:lvl>=5?(p.grade||est):est};
+  // deep looks (lvl 3+) start reading the CEILING, not just the floor — how high the tools go
+  if(lvl>=3 && p._ceiling!=null){ const cw=[0,0,0,6,4,2][lvl]||6, cn=Math.round((scoutNoise(p,91)*2-1)*(6-lvl));
+    out.ceilLo=ENG.clamp(p._ceiling+cn-cw,40,99); out.ceilHi=ENG.clamp(p._ceiling+cn+cw,40,99); }
+  return out;
 }
 // Bust read — unlocks at a tier-dependent look level, with a confidence band; a strong dept surfaces gems/red flags.
 function bustRead(p,t){ const v=viewOf(p,t), tier=Math.round(deptTierFor(t,p)); if((v.lvl||0)<BUST_UNLOCK[tier]) return null;
@@ -2989,6 +3052,9 @@ function scoutNotesFor(p,t){
     const fit=fits[Math.floor(scoutNoise(p,44+lvl)*fits.length)]||fits[0]; out.push(`${p.pos} report: ${fit}; ${c.hook||c.archLabel||'college profile'} — stock ${c.stock>0?'up '+c.stock:c.stock<0?'down '+Math.abs(c.stock):'steady'}.`); }
   const br=bustRead(p,t);
   if(lvl>=colorUnlock('makeup',tier)) out.push(`Makeup: work ethic ${scoutTraitLabel(p.workEthic||60)}, temperament ${scoutTraitLabel(p.temperament||60)}${br?`, bust risk ${br.pct}% ±${br.band}% (${br.label})`:''}.`);
+  if(s.ceilLo!=null) out.push(`Ceiling read: ${s.ceilLo}-${s.ceilHi} — ${potLabel(Math.round((s.ceilLo+s.ceilHi)/2))}.`);
+  if(lvl>=3 && p.prodBacked) out.push(`Production-backed: the Saturday tape matches the tools — profile busts less.`);
+  else if(lvl>=3 && p.toolsy) out.push(`Workout warrior: testing over tape. Traits pop, production doesn't — bust risk in the profile.`);
   if(lvl>=colorUnlock('archetype',tier)) out.push(`Archetype: ${(ARCHE_LBL[p.archetype]||p.archetype||'solid')} profile${p.gem&&tier>=4?' — GEM ALERT: tools point above the public grade.':''}.`);
   if(lvl>=5) out.push(`Final cross-check: board grade ${p.grade}/${ROOKIE_MAX_OVR}, ${(ARCHE_LBL[p.archetype]||p.archetype||'solid')} profile.`);
   return out;
@@ -3618,6 +3684,7 @@ function buildDraftOrder(){
   return order;
 }
 function startDraft(){
+  finalizeCollegeSignal();   // lock in the production-vs-grade + declare-age read before anyone picks
   G.prospects.sort((a,b)=>b.grade-a.grade);
   DRAFT={active:true, order:buildDraftOrder(), idx:0, made:[], onClock:false, simRest:false};
   G.draft=DRAFT; G.phase='draft'; VIEW='draft'; save(true); render();
@@ -3628,19 +3695,37 @@ function startDraft(){
 function aiPickFor(owner){ const nd=ENG.needs(owner); ensureScoutDept(owner);
   return G.prospects.slice(0,40).map(p=>({p,v:scoutEstimate(p,owner)}))
     .sort((a,b)=>(b.v.score+(nd[b.p.pos]||0)*3)-(a.v.score+(nd[a.p.pos]||0)*3))[0]?.p || G.prospects[0]; }
-function makePickFor(ownerAbbr, prospect, pi){
-  const owner=team(ownerAbbr); const ovr=rookieOverall(prospect);
-  owner.picks=(owner.picks||[]).filter(pk=>!(pk.year===pi.year&&pk.round===pi.round&&pk.from===pi.slot));
-  const rookieMorale=ENG.clamp(72+(pi.round<=1?10:pi.round<=2?6:pi.round<=4?3:0)+ENG.ri(-3,3),55,96);   // higher picks arrive more confident
-  owner.roster.push({id:prospect.id,first:prospect.first,last:prospect.last,name:prospect.name,pos:prospect.pos,age:prospect.age,ovr,num:jerseyNumber(owner,prospect.pos),attrs:{OVR:ovr},starter:false,depth:9,morale:rookieMorale,salary:ENG.round1(Math.max(0.9,(8-(prospect.projRound||4))*1.4)),years:4,rookie:true,
+// ONE rookie builder for every path into the league (war-room draft, quick draft, UDFA):
+// carries the prospect's HIDDEN traits (ceiling/bust/gem — they drive develop()), his COMBINE
+// identity (ht/wt/40/attrs — the 4.31 you scouted is the 4.31 you get), and his draft record.
+// Before this, the war-room path dropped the physicals and the quick path dropped the traits.
+function buildRookie(prospect, owner, pi){
+  const ovr=rookieOverall(prospect);
+  const round=(pi&&pi.round)||prospect.projRound||7;
+  const rookieMorale=ENG.clamp(72+(round<=1?10:round<=2?6:round<=4?3:0)+ENG.ri(-3,3),55,96);   // higher picks arrive more confident
+  const np={id:prospect.id,first:prospect.first,last:prospect.last,name:prospect.name,pos:prospect.pos,age:prospect.age,ovr,
+    num:owner?jerseyNumber(owner,prospect.pos):'',attrs:Object.assign({},prospect.attrs,{OVR:ovr}),
+    starter:false,depth:9,morale:rookieMorale,
+    salary:pi?ENG.round1(Math.max(0.9,(8-(prospect.projRound||4))*1.4)):0.8, years:pi?4:2, rookie:true,
     pot:prospect._ceiling||ENG.clamp(ovr+ENG.ri(2,14),50,99),                                  // hidden true ceiling
-    workEthic:prospect.workEthic,temperament:prospect.temperament,bustRisk:prospect.bustRisk,archetype:prospect.archetype,gem:prospect.gem,lateBloom:prospect.lateBloom,draftGrade:prospect.grade,collegeHonors:prospect.honors||null,
-    seasons:0,peak:ovr,draftedBy:ownerAbbr,draftOverall:pi.overall,draftYear:pi.year});
+    workEthic:prospect.workEthic,temperament:prospect.temperament,bustRisk:prospect.bustRisk,archetype:prospect.archetype,
+    gem:prospect.gem,lateBloom:prospect.lateBloom,draftGrade:prospect.grade,collegeHonors:prospect.honors||null,
+    ht:prospect.ht,wt:prospect.wt,t40:prospect.t40,TP:prospect.TP,TA:prospect.TA,home:prospect.home,
+    college:prospect.college&&prospect.college.season!=null?prospect.school:(prospect.college||prospect.school),
+    seasons:0,peak:ovr,
+    draftedBy:owner?owner.abbr:null,draftRound:pi?round:null,draftOverall:pi?pi.overall:null,draftYear:pi?pi.year:G.season+1,udfa:!pi};
+  if(window.PHYS) PHYS.backfill(np);   // fill only missing measurables — scouted combine numbers are kept
+  return np;
+}
+function makePickFor(ownerAbbr, prospect, pi){
+  const owner=team(ownerAbbr);
+  owner.picks=(owner.picks||[]).filter(pk=>!(pk.year===pi.year&&pk.round===pi.round&&pk.from===pi.slot));
+  owner.roster.push(buildRookie(prospect, owner, pi));
   G.prospects=G.prospects.filter(x=>x.id!==prospect.id);
   const reach=pi.round-(prospect.projRound||pi.round);
   if(owner.fans){ owner.fans.morale=ENG.clamp((owner.fans.morale||60) + (reach<=-1?2:reach>=2?-1:0) + (pi.round===1?1:0), 5, 99); }   // fanbase reacts to value/reach (public info)
   const blurb=window.VOICES?VOICES.draftCommentary(owner,prospect,pi.overall,pi.round):'';
-  DRAFT.made.unshift({overall:pi.overall,round:pi.round,year:pi.year,owner:ownerAbbr,via:pi.slot!==ownerAbbr?pi.slot:null,name:prospect.name,pos:prospect.pos,school:prospect.school,grade:prospect.grade,blurb,user:ownerAbbr===USER});
+  DRAFT.made.unshift({id:prospect.id,overall:pi.overall,round:pi.round,year:pi.year,owner:ownerAbbr,via:pi.slot!==ownerAbbr?pi.slot:null,name:prospect.name,pos:prospect.pos,school:prospect.school,grade:prospect.grade,projRound:prospect.projRound,arch:prospect.archetype,honors:prospect.honors||null,blurb,user:ownerAbbr===USER});
   if(window.VOICES && (pi.overall<=32 || ownerAbbr===USER)) VOICES.feedDraftPick(owner,prospect,pi.overall,pi.round,reach);   // only the meaningful picks make the social timeline (Day-3 picks don't flood it)
   if(ownerAbbr===USER) addNews('DRAFT',`R${pi.round} (#${pi.overall}): ${owner.city} select ${prospect.name} (${prospect.pos}, ${prospect.school}).`);
   if(AI.ready() && (pi.overall<=15 || ownerAbbr===USER)) aiDraftBlurb(DRAFT.made[0]);   // Claude adds a sharper line (async)
@@ -3673,8 +3758,19 @@ function finishDraft(){
   if(!DRAFT)return; DRAFT.active=false; DRAFT.onClock=false;
   const draftYear=G.season+1;
   G.teams.forEach(t=>{ t.picks=(t.picks||[]).filter(pk=>pk.year>draftYear); ensurePicks(t); });   // preserve traded future picks
+  // UDFA WAVE — the best of the undrafted hit the open market as priority free agents. Real NFL:
+  // every camp carries UDFAs and some become real players; the hidden-gem arc lives here too.
+  // (Build from the OLD class before startNewSeasonAfterDraft regenerates prospects + wipes faPool.)
+  const udfa=(G.prospects||[]).slice().sort((a,b)=>(b.grade||0)-(a.grade||0)).slice(0,36)
+    .map(p=>buildRookie(p,null,null));
+  udfa.forEach(u=>{ u.morale=ENG.clamp(u.morale-ENG.ri(4,10),45,90); });   // going undrafted stings
+  // persist the class for the Gazette DRAFT SPECIAL (grades, round-1 recap, UDFA watch)
+  G.lastDraft={ classYear:draftYear, heldSeason:G.season, made:DRAFT.made.slice().reverse(),
+    udfaTop:udfa.slice(0,6).map(u=>({name:u.name,pos:u.pos,school:u.college,grade:u.draftGrade})) };
   addNews('DRAFT',`The ${G.season} draft is complete — ${DRAFT.made.length} selections.`);
   startNewSeasonAfterDraft();
+  G.faPool=(G.faPool||[]).concat(udfa);   // after the new-season reset, so the wave isn't wiped
+  if(udfa.length) addNews('DRAFT',`Undrafted wave: ${udfa.length} priority free agents hit the market${udfa[0]?` — ${udfa[0].name} (${udfa[0].pos}) headlines the class`:''}.`);
 }
 async function aiDraftBlurb(pickRec){ try{ const owner=team(pickRec.owner);
   const sys='You are a sharp NFL draft analyst on a fictional-league broadcast. In ONE punchy sentence (max 30 words), react to a draft pick. Ground it in the data; no fluff.';
@@ -4694,6 +4790,12 @@ function renderAIGazette(m,s){
     h+=`</div></div>`; }
   if(s.campus&&s.campus.body){ h+=`<div class="gdiv">■ CAMPUS &amp; BEYOND ■</div><div class="gcol campus"><div class="gcol-kick">CAMPUS REPORT</div><h4 class="gcol-hd">${E(s.campus.headline)}</h4><div class="byline">By ${E(s.campus.byline||'Sallie Crane')}</div><p class="gart">${E(s.campus.body)}</p>${(s.campus.heisman_watch||[]).length?`<div class="hwatch"><b>HEISMAN WATCH:</b> ${s.campus.heisman_watch.map(E).join(' · ')}</div>`:''}${s.campus.draft_riser?`<div class="hwatch"><b>DRAFT RISER:</b> ${E(s.campus.draft_riser)}</div>`:''}</div>`; }
   else if(s.ncaa_report) h+=`<div class="gdiv">■ CAMPUS ■</div><p class="gart">${E(s.ncaa_report)}</p>`;
+  if(s.draft_grades&&s.draft_grades.length){
+    h+=`<div class="gdiv">■ THE REPORT CARD ■</div><div class="gradegrid">`+s.draft_grades.map(gr=>{
+      const gc=/^A/.test(gr.letter)?'#46d39a':/^B/.test(gr.letter)?'#5bbcff':/^C/.test(gr.letter)?'#e8b341':'#ef5b6b';
+      return `<div class="gradecard"><div class="gradehead"><b>${E(gr.team)}</b><span class="gletter" style="color:${gc};border-color:${gc}">${E(gr.letter)}</span></div><div class="gradebest">${E(gr.best)}</div><p class="gradeskinny">${E(gr.skinny)}</p></div>`;
+    }).join('')+`</div>`;
+  }
   if(s.winners_losers&&((s.winners_losers.winners||[]).length||(s.winners_losers.losers||[]).length)){ const wl=s.winners_losers; h+=`<div class="wlbox"><div class="wlcol"><h4 class="win">✓ Winners</h4>${(wl.winners||[]).map(x=>`<p>${E(x)}</p>`).join('')}</div><div class="wlcol"><h4 class="lose">✗ Losers</h4>${(wl.losers||[]).map(x=>`<p>${E(x)}</p>`).join('')}</div></div>`; }
   if(s.mailbag&&s.mailbag.length) h+=`<div class="gdiv">■ THE MAILBAG ■</div><div class="mailbag">`+s.mailbag.map(q=>`<div class="mail"><p class="mq"><i>“${E(q.question)}”</i> <span class="muted">— ${E(q.from)}</span></p><p class="ma"><b>THE MAILMAN:</b> ${E(q.answer)}</p></div>`).join('')+`</div>`;
   if(s.analytics_desk&&s.analytics_desk.body) h+=`<div class="gcol analytics"><div class="gcol-kick">THE ANALYTICS DESK</div><h4 class="gcol-hd">${E(s.analytics_desk.headline)}</h4><div class="byline">By ${E(s.analytics_desk.byline||'Dr. Vanessa Pruitt')}</div><p class="gart">${E(s.analytics_desk.body)}</p></div>`;
@@ -8206,6 +8308,167 @@ function backtestSim(N,coachMode){
     drives:((bt.dTD+bt.dFG+bt.dPunt+bt.dTO+bt.dDowns)/games/2).toFixed(2)
   };
 }
+/* ============================================================
+   CAREER LAB — the franchise-layer counterpart to the Sim Lab.
+   Runs full seasons (regular → playoffs → offseason → draft) through the
+   REAL code path and grades draft outcomes, development curves, aging,
+   and injuries against real-NFL career research:
+   · draft hit rates by round (PFR/OTC studies: R1 ~60% three-year starters,
+     roughly halving down the board; R1 Pro-Bowl ~25-35%)
+   · the second-year leap (largest avg improvement) + sophomore-slump rate
+     (~1/3 of overachieving rookies regress)
+   · positional peaks/careers (RB cliff ~27, QB plateau to mid-30s;
+     RB careers shortest in football)
+   · injury rates per team-season (season-enders ~1, ACL+Achilles ~1-2,
+     concussions 2-4 in-season, career-enders rare)
+   Run from the console: await careerLab(6)  — never active in normal play.
+   ============================================================ */
+const CAREERLAB_METRICS=[
+  // The four *Starter3 rows are GAME-ADJUSTED: real NFL rates are R1 62% / R2 48% / R3 36% /
+  // R4-5 25% / R6-7 13% (PFR/OTC three-year-starter studies), but this game's depth charts are
+  // OVR-ranked with no waiver churn — a healthy first-rounder is structurally "top-2 at position"
+  // (so R1 reads ~95+), and Day-3 fill-in starts under-count. The bands below calibrate the parts
+  // the engine can express: bust flame-outs denting R2-3, and development pathways for Day 3.
+  {k:'r1Starter3', lbl:'R1 starters by yr 3 (real 62)',   nfl:93,  tol:7,  unit:'%'},
+  {k:'r2Starter3', lbl:'R2 starters by yr 3 (real 48)',   nfl:66,  tol:12, unit:'%'},
+  {k:'r3Starter3', lbl:'R3 starters by yr 3',             nfl:36,  tol:13, unit:'%'},
+  {k:'r45Starter3',lbl:'R4-5 starters by yr 3 (real 25)', nfl:10,  tol:7,  unit:'%'},
+  {k:'r67Starter3',lbl:'R6-7 starters by yr 3 (real 13)', nfl:5,   tol:5,  unit:'%'},
+  {k:'r1Star5',    lbl:'R1 stars (85+) in 5 yrs',nfl:27,  tol:13, unit:'%'},
+  {k:'lateStar5',  lbl:'R5-7 stars in 5 yrs',    nfl:3,   tol:4,  unit:'%'},
+  {k:'y1y2Dev',    lbl:'Avg Y1→Y2 OVR jump',     nfl:2.2, tol:1.4, unit:''},
+  {k:'slumpRate',  lbl:'Sophomore-slump rate',   nfl:30,  tol:13, unit:'%'},
+  {k:'rbPeak',     lbl:'RB median peak age',     nfl:25,  tol:1.8, unit:''},
+  {k:'qbPeak',     lbl:'QB median peak age',     nfl:30,  tol:3.2, unit:''},
+  {k:'rbRetire',   lbl:'RB avg retirement age',  nfl:30,  tol:2.8, unit:''},
+  {k:'qbRetire',   lbl:'QB avg retirement age',  nfl:35,  tol:3.2, unit:''},
+  {k:'injTeam',    lbl:'Injuries / team-season', nfl:14,  tol:6,  unit:''},
+  {k:'sevTeam',    lbl:'Season-enders / team',   nfl:1.1, tol:0.7, unit:''},
+  {k:'majTeam',    lbl:'ACL+Achilles / team',    nfl:1.2, tol:0.9, unit:''},
+  {k:'concTeam',   lbl:'Concussions / team',     nfl:2.5, tol:1.6, unit:''},
+];
+const LAB_START_N={QB:1,RB:1,FB:1,WR:3,TE:1,T:2,G:2,C:1,DE:2,DT:2,OLB:2,ILB:2,CB:2,S:2,K:1,P:1};
+function labIsStarter(t,p){ const peers=t.roster.filter(x=>x.pos===p.pos && !(x.out>0) && !x.ir).sort((a,b)=>b.ovr-a.ovr);
+  return peers.indexOf(p) > -1 && peers.indexOf(p) < (LAB_START_N[p.pos]||2); }
+function labSnapshot(){
+  G.teams.forEach(t=>t.roster.forEach(p=>{
+    if(LAB.cohorts[p.id]) LAB.snaps.push({id:p.id,season:G.season,seasons:p.seasons||0,ovr:p.ovr,age:p.age,starter:labIsStarter(t,p)});
+    LAB.ages.push({pos:p.pos,age:p.age,ovr:p.ovr,id:p.id});   // full league-wide aging census (cross-sectional curve)
+  }));
+}
+async function careerLab(nSeasons){
+  nSeasons=nSeasons||6;
+  window.LAB={inj:[],dev:[],retire:[],cohorts:{},snaps:[],ages:[],err:[]};
+  const _pr=window.processRetirement;
+  window.processRetirement=(p,from)=>{ LAB.retire.push({pos:p.pos,age:p.age,ovr:p.ovr,scars:p._scars||0}); return _pr(p,from); };
+  const u=team(USER); u.auto=Object.assign(u.auto||{},{master:true,draft:true});
+  const wait=ms=>new Promise(r=>setTimeout(r,ms));
+  const s0=G.season, t0=Date.now();
+  while(G.season-s0<nSeasons && Date.now()-t0<1000*60*14){
+    let guard=0;
+    while((G.phase==='regular'||G.phase==='playoffs') && guard++<120){ G.pendingFire=null;
+      try{ advanceWeek({force:true}); }catch(e){ LAB.err.push('adv S'+G.season+' w'+G.week+': '+(e&&e.message)); break; }
+      if(G.phase==='regular' && G.week===10) labSnapshot();   // mid-season census: injury fill-in starters COUNT (the real Day-3 pathway)
+    }
+    if(G.phase==='offseason'){
+      G.pendingFire=null;
+      try{ offseasonScreen(); }catch(e){ LAB.err.push('off S'+G.season+': '+(e&&e.message)); }
+      try{ startDraft(); draftSimRest(); }catch(e){ LAB.err.push('draft S'+G.season+': '+(e&&e.message)); }
+      let g2=0; while(G.phase!=='regular' && g2++<600){ if(typeof DRAFT!=='undefined'&&DRAFT&&DRAFT.onClock) try{ draftAutoUser(); }catch(e){} await wait(20); }
+      G.teams.forEach(t=>t.roster.forEach(p=>{ if(p.draftYear===G.season && (p.seasons||0)===0 && p.draftRound){
+        LAB.cohorts[p.id]={id:p.id,pos:p.pos,round:p.draftRound,overall:p.draftOverall,ovr0:p.ovr,grade:p.draftGrade,season:G.season}; } }));
+      labSnapshot();
+    } else if(G.phase==='draft'){ try{ draftSimRest(); }catch(e){} let g3=0; while(G.phase!=='regular'&&g3++<600) await wait(20); }
+    else if(guard>=120){ LAB.err.push('stuck in '+G.phase+' S'+G.season); break; }
+  }
+  window.processRetirement=_pr;
+  return careerLabReport();
+}
+function careerLabReport(){
+  const L=window.LAB; if(!L) return null;
+  const seasons=[...new Set(L.snaps.map(s=>s.season))].sort((a,b)=>a-b);
+  const nowS=G.season, teamSeasons=Math.max(1,(seasons.length)*G.teams.length);
+  const alive=new Set(); G.teams.forEach(t=>t.roster.forEach(p=>alive.add(p.id)));
+  const co=Object.values(L.cohorts);
+  const lastSnap={}; L.snaps.forEach(s=>{ const k=s.id; if(!lastSnap[k]||s.season>lastSnap[k].season) lastSnap[k]=s; });
+  const bySnap={}; L.snaps.forEach(s=>{ (bySnap[s.id]=bySnap[s.id]||[]).push(s); });
+  const pct=(a,b)=>b?Math.round(a/b*100):0;
+  // "3-year starter" = SUSTAINED: starter in 2+ early-career snapshots (mirrors the real research bar,
+  // not a one-week depth-chart cameo)
+  // "3-year starter" = starter snapshots in 2+ DISTINCT seasons of his first four league years —
+  // a rookie-year cameo that ends in a bust doesn't count, a real job held across seasons does
+  const starterBy3=r=>{ const rows=co.filter(c=> (r.includes?r.includes(c.round):c.round===r) && nowS-c.season>=3);
+    const hit=rows.filter(c=>new Set((bySnap[c.id]||[]).filter(s=>s.seasons>=0&&s.seasons<=3&&s.starter).map(s=>s.season)).size>=2);
+    return {n:rows.length,v:pct(hit.length,rows.length)}; };
+  const starBy5=r=>{ const rows=co.filter(c=>(r.includes?r.includes(c.round):c.round===r) && nowS-c.season>=3);
+    const hit=rows.filter(c=>(bySnap[c.id]||[]).some(s=>s.seasons<=5&&s.ovr>=85)); return {n:rows.length,v:pct(hit.length,rows.length)}; };
+  const devT={}; L.dev.forEach(x=>{ const k=Math.min(4,Math.max(0,x.seasons)); (devT[k]=devT[k]||[]).push(x.d); });
+  const avg=a=>a&&a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+  const cands=L.dev.filter(x=>x.cand);
+  // aging-curve peak WITHOUT survivorship bias: from the development deltas themselves — the last age
+  // at which the position's average offseason change is still non-negative (i.e., where growth stops)
+  const peaks=pos=>{ const by={}; L.dev.forEach(x=>{ if(!pos.includes(x.pos)||x.age<22||x.age>36||(x.ovr||0)<72) return; (by[x.age]=by[x.age]||[]).push(x.d); });   // quality players only — the real aging studies weight by snaps, and backup scrubs would drown the curve
+    let peak=0; Object.keys(by).map(Number).sort((a,b)=>a-b).forEach(age=>{ const arr=by[age]; if(arr.length<15) return;
+      if(arr.reduce((x,y)=>x+y,0)/arr.length>=0) peak=age; });
+    return peak; };
+  const retAvg=pos=>{ const rows=L.retire.filter(r=>pos.includes(r.pos)); return rows.length?+(avg(rows.map(r=>r.age))).toFixed(1):0; };
+  const out={
+    seasons:seasons.length, cohortN:co.length, errors:L.err,
+    r1Starter3:starterBy3(1).v, r2Starter3:starterBy3(2).v, r3Starter3:starterBy3(3).v,
+    r45Starter3:starterBy3([4,5]).v, r67Starter3:starterBy3([6,7]).v,
+    r1Star5:starBy5(1).v, lateStar5:starBy5([5,6,7]).v,
+    y1y2Dev:+avg(devT[1]||[]).toFixed(2), y2y3Dev:+avg(devT[2]||[]).toFixed(2), vetDev:+avg(devT[4]||[]).toFixed(2),
+    slumpRate:pct(cands.filter(x=>x.slump).length,cands.length), slumpN:cands.length,
+    rbPeak:peaks(['RB']), qbPeak:peaks(['QB']), wrPeak:peaks(['WR']), cbPeak:peaks(['CB']),
+    rbRetire:retAvg(['RB','FB']), qbRetire:retAvg(['QB']), allRetire:retAvg(['QB','RB','FB','WR','TE','T','G','C','DE','DT','OLB','ILB','CB','S']),
+    injTeam:+(L.inj.length/teamSeasons).toFixed(1), sevTeam:+(L.inj.filter(i=>i.sev).length/teamSeasons).toFixed(2),
+    majTeam:+(L.inj.filter(i=>i.body==='ACL'||i.body==='Achilles').length/teamSeasons).toFixed(2),
+    concTeam:+(L.inj.filter(i=>i.conc).length/teamSeasons).toFixed(2),
+    carTeam:+(L.inj.filter(i=>i.car).length/teamSeasons).toFixed(3),
+    scarsInLeague:(()=>{ let n=0; G.teams.forEach(t=>t.roster.forEach(p=>{ if(p._scars)n++; })); return n; })()
+  };
+  out.grades=CAREERLAB_METRICS.map(m=>{ const v=out[m.k], ok=v!=null&&Math.abs(v-m.nfl)<=m.tol;
+    return `${ok?'PASS':'MISS'} ${m.lbl}: ${v}${m.unit} (target ${m.nfl}±${m.tol})`; });
+  return out;
+}
+window.careerLab=careerLab; window.careerLabReport=careerLabReport;
+
+/* ============================================================
+   DRAFT GRADES — the Gazette's team-by-team class report card.
+   Value model: every pick is graded against the expected board grade
+   for its slot (the same round baselines the class calibration uses),
+   weighted by draft capital (early picks count more). Steals (a
+   projected-R2 talent at pick 70) score up; reaches score down.
+   Letter grades come from the league-wide curve, so every draft has
+   its winners and its victims — like real draft-week coverage.
+   ============================================================ */
+const ROUND_BASE_GRADE=[0,78,72,67,62,58,54,50];
+function computeDraftGrades(){
+  const D=G.lastDraft; if(!D||!D.made||!D.made.length) return null;
+  const teams={};
+  D.made.forEach(pk=>{
+    const base=ROUND_BASE_GRADE[pk.round]||50, w=pk.round<=2?1.6:pk.round<=4?1.2:1.0;
+    const steal=(pk.projRound&&pk.projRound<pk.round)?(pk.round-pk.projRound)*1.6:0;       // fell past his grade → value
+    const reach=(pk.projRound&&pk.projRound>pk.round)?(pk.projRound-pk.round)*1.4:0;       // taken ahead of his grade → tax
+    const v=((pk.grade||base)-base+steal-reach)*w;
+    const t=teams[pk.owner]||(teams[pk.owner]={team:pk.owner,picks:[],val:0,wsum:0,best:null,worst:null});
+    t.picks.push(pk); t.val+=v; t.wsum+=w;
+    const pv=(pk.grade||base)-base+steal-reach;
+    if(!t.best||pv>t.best.v) t.best={pk,v:pv};
+    if(!t.worst||pv<t.worst.v) t.worst={pk,v:pv};
+  });
+  const rows=Object.values(teams).map(t=>({...t,score:t.wsum?t.val/t.wsum:0}));
+  const sorted=rows.slice().sort((a,b)=>b.score-a.score);
+  const LETTERS=['A+','A','A-','B+','B','B-','C+','C','C-','D+','D'];
+  sorted.forEach((t,i)=>{ t.rank=i+1; t.letter=LETTERS[ENG.clamp(Math.floor(i/sorted.length*LETTERS.length),0,LETTERS.length-1)]; });
+  const all=D.made.slice();
+  const bestValue=all.slice().sort((a,b)=>(((b.grade||0)-(ROUND_BASE_GRADE[b.round]||50))-((a.grade||0)-(ROUND_BASE_GRADE[a.round]||50))))[0];
+  const biggestReach=all.filter(p=>p.round<=3).sort((a,b)=>(((a.grade||0)-(ROUND_BASE_GRADE[a.round]||50))-((b.grade||0)-(ROUND_BASE_GRADE[b.round]||50))))[0];
+  const firstQB=all.find(p=>p.pos==='QB');
+  return { rows:sorted, bestValue, biggestReach, firstQB, r1:all.filter(p=>p.round===1) };
+}
+window.computeDraftGrades=computeDraftGrades;
+
 // the metrics the validator grades the engine on, each vs the real NFL league average
 const SIMLAB_METRICS=[
   {k:'ypc',  lbl:'Yards / carry',      nfl:4.3, tol:0.4, unit:''},
@@ -8802,10 +9065,13 @@ function offseasonScreen(){
         if(window.VOICES) VOICES.feedPush({h:'@AdamMortensen',n:'Adam Mortensen',v:true,c:'#1d9bf0'},`How was ${p.name} pick #${p.draftOverall}?? The ${t.abbr} ${p.pos} is now one of the best in the league. Every scouting dept is re-watching his tape and crying. 🍿`,'NEWS',true);
       }
       const notable=t.abbr===USER||p.ovr>=84;
-      if(notable){
+      if(p._sophSlump){ if(notable||p.draftRound<=2) addNews('DEV',`📉 Sophomore slump: ${p.name} (${p.pos}, ${t.abbr}) comes back to earth after the hot rookie year — ${p.ovr} OVR. The league adjusted; now he has to answer.`); delete p._sophSlump; }
+      else if(notable){
         if(d>=4 && p.seasons<=5 && !p._broke) addNews('DEV',`📈 ${p.name} (${p.pos}, ${t.abbr}) takes a leap — now ${p.ovr} OVR. The work is paying off.`);
+        else if(d>=3 && p.seasons===1) addNews('DEV',`📈 Second-year leap: ${p.name} (${p.pos}, ${t.abbr}) looks like a different player — ${p.ovr} OVR after a rookie year of real reps.`);
         else if(d<=-3 && p.age<=27 && (p._lastPress||0)>0.4) addNews('DEV',`📉 ${p.name} (${p.pos}, ${t.abbr}) is pressing under the ${t.city} spotlight — down to ${p.ovr}.`);
         else if(d<=-3 && (p.bustRisk||0)>0.55 && p.seasons<=4) addNews('DEV',`📉 ${p.name} (${p.pos}, ${t.abbr}) — the tools never translated. Dropping to ${p.ovr}; the bust talk grows.`);
+        else if(d<=-3 && (p._scars||0)>=2) addNews('DEV',`📉 The injuries have taken their toll on ${p.name} (${p.pos}, ${t.abbr}) — down to ${p.ovr}. The burst isn't coming back.`);
         else if(d<=-4) addNews('DEV',`📉 Father Time catches ${p.name} (${p.pos}, ${t.abbr}) — ${p.ovr} OVR.`);
       }
     });
@@ -8815,7 +9081,15 @@ function offseasonScreen(){
   // Collect retirements (hard caps + NN) — do not remove yet
   const retireActions=[]; // {p, from:t}
   G.teams.forEach(t=>{
-    const retirees=t.roster.filter(p=> p.age>=41 || p.ovr<40 || (p.age>=30 && ENG.rng() < retireProb(p)*0.9*(p.ovr>=86?0.2:p.ovr>=80?0.5:1)) );   // elite players hang on into their late 30s (Brady/Rodgers careers) → homegrown stars get a HOF window
+    const retirees=t.roster.filter(p=>{
+      const curve=ENG.ageCurve?ENG.ageCurve(p.pos):{prime:29};
+      // positional retirement pressure starts a year past the positional prime (RBs walk away
+      // years before QBs/kickers — real career-length data), scars push the door open sooner
+      const pressureAge=Math.min(30,curve.prime+1);
+      const scarBoost=1+(p._scars||0)*0.35;
+      return p.age>=(ENG.retireAge?ENG.retireAge(p)+3:41) || p.ovr<40
+        || (p.age>=pressureAge && ENG.rng() < retireProb(p)*0.9*scarBoost*(p.ovr>=86?0.2:p.ovr>=80?0.5:1));   // elite players hang on into their late 30s (Brady/Rodgers careers) → homegrown stars get a HOF window
+    });
     retirees.forEach(p=> retireActions.push({p,from:t}));
   });
   retireActions.forEach(({p,from})=>{ processRetirement(p,from); });

@@ -626,6 +626,13 @@ body:not(.cg-gamemode) .cg-peek-btn{ display:none; }
 .gaz.news .beatnotes{ margin:4px 0 0 16px; font-size:12.5px; } .gaz.news .beatnotes li{ margin:2px 0; }
 .gaz.news .hwatch{ font-size:12px; margin-top:6px; } .gaz.news .hwatch b{ color:#9a3b2e; }
 .gaz.news .wlbox{ display:grid; grid-template-columns:1fr 1fr; gap:16px; border-top:2px solid #1a1714; padding-top:10px; margin:12px 0; }
+/* draft-special report card */
+.gaz.news .gradegrid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:10px; margin:10px 0 14px; }
+.gaz.news .gradecard{ border:1px solid #1a1714; background:rgba(0,0,0,0.045); padding:8px 10px; border-radius:3px; }
+.gaz.news .gradehead{ display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+.gaz.news .gletter{ font-family:var(--disp,serif); font-weight:900; font-size:19px; border:2px solid; border-radius:4px; padding:0 7px; line-height:1.35; }
+.gaz.news .gradebest{ font-size:11px; margin-top:4px; opacity:0.85; }
+.gaz.news .gradeskinny{ font-size:11.5px; font-style:italic; margin:3px 0 0; opacity:0.75; }
 .gaz.news .wlcol h4{ font-size:14px; margin:0 0 4px; } .gaz.news .wlcol h4.win{ color:#1a7a3a; } .gaz.news .wlcol h4.lose{ color:#b3261e; } .gaz.news .wlcol p{ font-size:13px; margin:3px 0; }
 .gaz.news .mailbag .mail{ border-bottom:1px dotted #cfc6b6; padding:6px 0; } .gaz.news .mq{ font-size:13px; } .gaz.news .ma{ font-size:13px; margin-top:3px; } .gaz.news .ma b{ color:#9a3b2e; }
 @media(max-width:760px){ .gaz.news .gcols{ grid-template-columns:1fr; } .gaz.news .wlbox{ grid-template-columns:1fr; } .gmast-name{ font-size:26px; } }

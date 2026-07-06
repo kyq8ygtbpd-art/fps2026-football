@@ -160,7 +160,92 @@
 
   /* ---------------- PROSE GAZETTE (reads like a real paper) ---------------- */
   function ordinal(n){ const s=['th','st','nd','rd'],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
+  // ---- SPECIAL EDITIONS -------------------------------------------------------------------
+  // The paper knows what week it is: an OFFSEASON SPECIAL when the league year turns over, and a
+  // DRAFT SPECIAL (with the full report card) the week after the picks are in.
+  function newsByTag(tags,n){ return (G.news||[]).filter(x=>tags.includes(x.tag)).slice(0,n||6); }
+  function offseasonGazette(){
+    const out={byline:'The Gazette staff'}, season=G.season, st=standings(), top=st[0], me=ut();
+    const champ=(G.news||[]).find(n=>n.tag==='CHAMPION');
+    out.edition_kicker=`OFFSEASON SPECIAL · the league year turns over`;
+    out.lead={ headline: champ? champ.txt.replace(/^🏆 /,'') : `The ${season} season closes — now the real chess begins`,
+      deck:`Retirements, the tag window, free agency and the draft board: the winners of ${season+1} are being decided right now.`,
+      dateline:'LEAGUE OFFICES — ', byline:'The Gazette',
+      body:(champ?`${champ.txt.replace(/^🏆 /,'')} The parade barely ended before the phones started ringing. `:'')+
+        `Front offices around the league have moved from game-planning to roster surgery: contract calls, cap math, tag decisions and draft boards. ${top?`${top.city} finished on top of the standings, but nobody stays on top by standing still. `:''}`+
+        `${me?`For ${me.city}, the offseason is where a season is quietly won — the moves made in the next few weeks set the ceiling for next year.`:''}` };
+    // RETIREMENT TRIBUTE — the biggest name to hang them up this year gets the feature treatment
+    const ballot=(G.hofBallot||[]).filter(c=>c.retired===season).sort((a,b)=>(b.score||0)-(a.score||0));
+    const rNews=newsByTag(['RETIRE'],8);
+    if(ballot[0]){ const c=ballot[0];
+      out.feature={ kicker:'END OF AN ERA', headline:`${c.name} walks away`, byline:'Hank Mariucci', dateline:'',
+        body:`${c.name} (${c.pos}, ${c.team}) announced his retirement this offseason, closing the book on ${c.seasons||'a career of'} seasons${c.proBowls?`, ${c.proBowls} Pro Bowl${c.proBowls>1?'s':''}`:''}${c.allPros?`, ${c.allPros} All-Pro nod${c.allPros>1?'s':''}`:''}${c.rings?` and ${c.rings} ring${c.rings>1?'s':''}`:''}. The Hall of Fame conversation starts in five years; the hole in ${c.team}'s locker room starts now. `+
+          (rNews.length>1?`He headlines a retirement class that also includes ${rNews.slice(1,4).map(n=>n.txt.split(' (')[0].replace(/^📝 /,'')).join(', ')}.`:`Around the league, the generational turnover continues.`) };
+    }
+    // FREE-AGENCY / TAG TRACKER
+    const moves=newsByTag(['SIGNING','TRADE','ROSTER'],7), staff=newsByTag(['STAFF'],4);
+    out.wire={ transactions:moves.map(n=>n.txt).slice(0,6), injuries:[] };
+    // AWARDS DESK
+    const awards=newsByTag(['AWARD'],4);
+    if(awards.length) out.notebook=[{tag:'AWARDS DESK',hit:awards.map(n=>n.txt).join(' ')}].concat(staff.map(n=>({tag:'COACHING CAROUSEL',hit:n.txt})));
+    else out.notebook=staff.map(n=>({tag:'COACHING CAROUSEL',hit:n.txt}));
+    // RISING & FALLING — the development stories (second-year leaps, slumps, Father Time)
+    const dev=newsByTag(['DEV'],10);
+    out.winners_losers={ winners:dev.filter(n=>/📈/.test(n.txt)).slice(0,4).map(n=>n.txt.replace(/^📈 /,'')),
+      losers:dev.filter(n=>/📉/.test(n.txt)).slice(0,4).map(n=>n.txt.replace(/^📉 /,'')) };
+    out.column={ byline:'Hank Mariucci', headline:'Offseason champions win nothing',
+      body:`${gpick(["Every March somebody 'wins' the offseason and every January they're watching from the couch.","The tag is a tool, not a plan.","Retirements tell you more about a franchise than signings do."],season)} The clubs that matter are the ones quietly re-signing their own, drafting to a type, and letting the noisy teams pay retail in free agency. ${me?`${me.city} fans: watch what your front office does with its OWN guys before you judge the shopping spree.`:''} Rings are won in the building, not on the ticker.` };
+    out.by_the_numbers=[ {stat:String((G.hofBallot||[]).filter(c=>c.retired===season).length||rNews.length), context:'notable retirements this offseason'},
+      {stat:String(moves.length), context:'signings & trades on the wire this cycle'},
+      {stat:(G.prospects&&G.prospects.length?String(G.prospects.length):'—'), context:'prospects on the incoming draft board'} ];
+    { const heis=(G.college&&G.college.heisman||[])[0];
+      out.campus={ byline:'Sallie Crane', headline:'The board is set', body:`The college season is in the books and the draft board is live. ${heis?`${heis.name} (${heis.pos}, ${heis.school}) sits at the top of most boards. `:''}Scouting departments are burning tape; the teams that do this month right eat for the next five years.`, heisman_watch:(G.college&&G.college.heisman||[]).slice(0,3).map(p=>`${p.name} (${p.pos}, ${p.school})`), draft_riser:'' }; }
+    out.quote_of_week=(function(){ try{ const c=ballot[0]; if(!c) return null; return {text:'You always think there is one more season in the tank. The tank tells you otherwise.', attribution:`— ${c.name}, announcing his retirement`}; }catch(e){ return null; } })();
+    return out;
+  }
+  function draftGazette(){
+    const out={byline:'The Gazette staff'}, season=G.season, D=G.lastDraft, me=ut();
+    const gr=(window.computeDraftGrades&&computeDraftGrades())||null;
+    const first=D.made[0], r1=D.made.filter(p=>p.round===1);
+    const qbs1=r1.filter(p=>p.pos==='QB').length;
+    out.edition_kicker=`DRAFT SPECIAL · every pick graded inside`;
+    out.lead={ headline:`${first?`${first.name} goes No. 1`:'The picks are in'} — the ${D.classYear} class arrives`,
+      deck:`${r1.length} first-rounders, ${D.made.length} picks, ${qbs1?`${qbs1} quarterback${qbs1>1?'s':''} in round one, `:''}and a report card nobody in a front office wants to read.`,
+      dateline:'DRAFT NIGHT — ', byline:'The Gazette',
+      body:(first?`With the first pick of the ${D.classYear} draft, ${team(first.owner)?team(first.owner).city+' '+team(first.owner).nick:first.owner} selected ${first.name}, ${first.pos}, ${first.school}${first.honors?` — the ${first.honors}`:''}. `:'')+
+        r1.slice(1,5).map(p=>`At ${p.overall}, ${p.owner} went ${p.name} (${p.pos}, ${p.school})`).join('. ')+
+        `. ${qbs1>=3?'The quarterback run came early and often — desperation is the draft\'s oldest fuel. ':qbs1===0?'No quarterback heard his name in round one — a cold market for the most important position. ':''}`+
+        `${me&&D.made.some(p=>p.owner===USER)?`${me.city}'s haul is graded below with everyone else's. The tape doesn't care about draft-night applause.`:''}` };
+    if(gr){
+      out.draft_grades=gr.rows.map(t=>({ team:t.team, letter:t.letter,
+        best:t.best?`Best pick: ${t.best.pk.name} (${t.best.pk.pos}) R${t.best.pk.round} #${t.best.pk.overall}`:'',
+        skinny:(t.rank===1?`Class of the year — value at every turn.`:t.rank<=5?`One of the cleaner boards in the league.`:t.rank>=gr.rows.length-2?`Reaches early, prayers late.`:t.letter[0]==='B'?`Solid, unspectacular, useful.`:t.letter[0]==='C'?`A board that raised eyebrows in rival war rooms.`:`Process questions all weekend.`) }));
+      out.winners_losers={ winners:gr.rows.slice(0,3).map(t=>`${t.team} — ${t.letter}: ${t.best?t.best.pk.name+' headlines a real haul':'a clean board'}`),
+        losers:gr.rows.slice(-3).reverse().map(t=>`${t.team} — ${t.letter}${t.worst?`: the ${t.worst.pk.name} pick drew whispers`:''}`) };
+      out.by_the_numbers=[ gr.bestValue?{stat:`#${gr.bestValue.overall}`,context:`steal of the draft — ${gr.bestValue.name} (${gr.bestValue.pos}), a R${gr.bestValue.projRound||'?'} talent`}:null,
+        gr.biggestReach?{stat:`#${gr.biggestReach.overall}`,context:`the reach — ${gr.biggestReach.name} to ${gr.biggestReach.owner}`}:null,
+        {stat:String(qbs1),context:'quarterbacks in round one'},
+        gr.firstQB?{stat:`#${gr.firstQB.overall}`,context:`first QB off the board — ${gr.firstQB.name} (${gr.firstQB.owner})`}:null ].filter(Boolean);
+      out.column={ byline:'Hank Mariucci', headline:`Grades are for report cards. Careers are for tape.`,
+        body:`${gr.rows[0].team} walk away with the cleanest card (${gr.rows[0].letter}) and ${gr.rows[gr.rows.length-1].team} with the ugliest (${gr.rows[gr.rows.length-1].letter}) — and none of it will matter if the development staffs don't do their jobs. ${gr.biggestReach?`The ${gr.biggestReach.name} pick at #${gr.biggestReach.overall}? Somebody in that room pounded the table, and somebody else should have pounded back. `:''}Three drafts from now we'll know who actually won this weekend. Clip this column and check my work.` };
+    }
+    // ROUND ONE, PICK BY PICK
+    out.feature={ kicker:'ROUND ONE', headline:'The first round, pick by pick', byline:'The Gazette', dateline:'',
+      body:r1.map(p=>`${p.overall}. ${p.owner}${p.via?` (via ${p.via})`:''} — ${p.name}, ${p.pos}, ${p.school}${p.arch&&p.arch!=='solid'?` (${p.arch})`:''}`).join('. ')+'.' };
+    // UDFA GEM WATCH + the user's class in the notebook
+    const nb=[];
+    if(D.udfaTop&&D.udfaTop.length) nb.push({tag:'UDFA GEM WATCH',hit:`Undrafted but not unwatched: ${D.udfaTop.slice(0,4).map(u=>`${u.name} (${u.pos}, ${u.school||'—'})`).join(', ')} all signed priority deals. Every camp has one who sticks.`});
+    const mine=D.made.filter(p=>p.owner===USER);
+    if(mine.length) nb.push({tag:'YOUR CLASS',hit:`${me.city} came away with ${mine.length} picks: ${mine.slice(0,5).map(p=>`${p.name} (${p.pos}, R${p.round})`).join(', ')}${mine.length>5?'…':''}.`});
+    const honored=D.made.filter(p=>p.honors).slice(0,3);
+    if(honored.length) nb.push({tag:'HARDWARE',hit:`Decorated names off the board: ${honored.map(p=>`${p.name} (${p.honors})`).join('; ')}.`});
+    out.notebook=nb;
+    out.quote_of_week=(function(){ try{ if(!first) return null; const f=findPlayer(first.id); if(f&&f.p){ ensurePersona(f.p); const q=quote(f.p,'win',{}); if(q) return {text:q, attribution:`— ${first.name}, moments after going No. 1`}; } }catch(e){} return {text:'They passed on a lot of guys tonight. We remember that in this league.', attribution:'— a Day-3 pick, already writing the chip onto his shoulder'}; })();
+    return out;
+  }
   function proceduralGazette(){
+    if(G.phase==='offseason') return offseasonGazette();
+    if(G.week===0 && G.lastDraft && G.lastDraft.classYear===G.season) return draftGazette();
     const wk=G.week, season=G.season, results=G.lastResults||[];
     const u=results.find(r=>r.home===USER||r.away===USER), ut2=ut();
     const sortStand=standings();
@@ -182,17 +267,28 @@
       else { const blow=results.slice().sort((a,b)=>Math.abs(b.hs-b.as)-Math.abs(a.hs-a.as))[0];
         const w=blow?(blow.hs>blow.as?team(blow.home):team(blow.away)):top;
         out.lead_headline=u? (`${ut2.city} ${ (u.home===USER?u.hs>u.as:u.as>u.hs)?'roll on':'stumble'} as Week ${wk} reshapes the race`) : `${top.city} stay perfect atop the standings`;
+        const lateSeason=wk>=Math.max(12,(G.maxWeek||17)-5);
         out.lead_story=`Week ${wk} is in the books, and the picture is sharpening. ${top.city} (${top.wins}-${top.losses}) sit atop the league${top.wins-top.losses>=3?', looking every bit the part of a contender':', though the chase pack is closing'}. `+
           (u? `Your ${ut2.city} ${ut2.nick} ${(u.home===USER?u.hs>u.as:u.as>u.hs)?`took care of business${u.potg&&u.potg.team===USER?`, with ${u.potg.name} (${u.potg.stat}) leading the way`:''}`:`came up short and have work to do`}. ` : '')+
           (blow&&Math.abs(blow.hs-blow.as)>=21? `Elsewhere, ${w.city} sent a message with a ${Math.max(blow.hs,blow.as)}-${Math.min(blow.hs,blow.as)} demolition. ` : '')+
-          `At the other end, ${cellar.city} (${cellar.wins}-${cellar.losses}) are searching for answers.`;
+          (lateSeason? `With ${(G.maxWeek||17)-wk} week${(G.maxWeek||17)-wk===1?'':'s'} left, every snap is a playoff snap — the bubble teams know exactly who they're scoreboard-watching. ` : '')+
+          `At the other end, ${cellar.city} (${cellar.wins}-${cellar.losses}) are ${lateSeason?'playing for draft position now':'searching for answers'}.`;
       }
     }
-    // ---- game features (prose recaps) ----
-    out.game_features=(window.sourcedGameFeatures&&window.sourcedGameFeatures(results,3))||results.slice().sort((a,b)=>Math.abs((b.hs-b.as))-Math.abs((a.hs-a.as))).slice(0,3).map(r=>{
+    // ---- game features (prose recaps that read like a beat writer filed them) ----
+    const gSeed=season*100+wk;
+    out.game_features=(window.sourcedGameFeatures&&window.sourcedGameFeatures(results,3))||results.slice().sort((a,b)=>Math.abs((b.hs-b.as))-Math.abs((a.hs-a.as))).slice(0,3).map((r,gi)=>{
       const w=r.hs>=r.as?team(r.home):team(r.away), l=r.hs>=r.as?team(r.away):team(r.home), ws=Math.max(r.hs,r.as), ls=Math.min(r.hs,r.as);
-      return { headline:`${w.city} defeat ${l.city}, ${ws}-${ls}${r.ot?' (OT)':''}`,
-        body:`${w.city} ${w.nick} beat ${l.city} ${l.nick} ${ws}-${ls}${r.ot?' in overtime':''}. ${r.potg?`${r.potg.name} (${r.potg.team}) led the box score with ${r.potg.stat}. `:''}This recap is limited to the saved final score and box score.` };
+      const m=ws-ls, homeWon=r.hs>=r.as;
+      const lede = r.ot? gpick([`It took extra football, but ${w.city} found a way`,`Sixty minutes couldn't separate them; overtime could`,`${w.city} survived a heavyweight round that wouldn't end`],gSeed+gi)
+        : m>=21? gpick([`${w.city} didn't just win — they made a statement`,`It was over by the third quarter`,`${w.city} ran ${l.city} out of their own building`,`Total control from the opening drive`],gSeed+gi)
+        : m>=10? gpick([`${w.city} pulled away late and never looked back`,`A grinding, professional win for ${w.city}`,`${w.city} did the heavy lifting in the second half`],gSeed+gi)
+        : gpick([`A one-score fight decided in the final minutes`,`${w.city} made one more play than ${l.city} — that was the whole game`,`Field position, third downs, and nerve — ${w.city} won all three`],gSeed+gi);
+      const wRec=`${w.wins}-${w.losses}`, lRec=`${l.wins}-${l.losses}`;
+      const stakes = w.wins-w.losses>=3? `The win keeps ${w.city} (${wRec}) squarely in the race` : w.losses-w.wins>=3? `For a ${wRec} ${w.nick} team, it's a rare good Sunday` : `${w.city} move to ${wRec}`;
+      const lWoe = l.losses-l.wins>=3? `${l.city} (${lRec}) are running out of season` : `${l.city} fall to ${lRec}`;
+      return { headline:`${w.city} ${m>=21?'rout':m>=10?'handle':r.ot?'outlast':'edge'} ${l.city}, ${ws}-${ls}${r.ot?' (OT)':''}`,
+        body:`${lede}, ${homeWon?'defending home turf':'stealing one on the road'} ${ws}-${ls}${r.ot?' in overtime':''}. ${r.potg?`${r.potg.name} (${r.potg.team}) was the story of the box score — ${r.potg.stat}. `:''}${stakes}; ${lWoe}. ${gpick(['The tape will say it was closer than the score.','Complementary football, start to finish.','The locker room called it a must-have, and they had it.','One team left with answers, the other with questions.'],gSeed+gi+7)}` };
     });
     // ---- power rankings ----
     out.power_rankings=`POWER RANKINGS. `+sortStand.slice(0,5).map((t,i)=>`${i+1}. ${t.city} (${t.wins}-${t.losses})`).join('  ·  ')+`. `+
