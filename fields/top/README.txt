@@ -1,0 +1,3 @@
+TOP-DOWN field surfaces go HERE, named by team abbr: PHI.png BUF.png SEA.png ...
+These become the live PLAYING SURFACE under the players (the canvas). See spec.
+Aspect ratio MUST be 120:53.3 (~2.26:1), e.g. 1560x690. Bird's-eye, end zones left & right.

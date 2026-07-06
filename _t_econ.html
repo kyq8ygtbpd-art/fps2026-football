@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8"></head><body>
+<script>window.RESULT={errs:[]};window.addEventListener('error',e=>RESULT.errs.push(e.message+'@'+e.lineno));</script>
+<script src="data.js"></script><script src="engine.js"></script><script src="sim.js"></script>
+<script src="nn.js"></script><script src="ai.js"></script><script src="stories.js"></script>
+<script src="voices.js"></script><script src="ncaa.js"></script><script src="leagues.js"></script>
+<script src="odds.js"></script><script src="app.js"></script>
+<script>
+function J(o){return JSON.stringify(o);}
+window.onload=function(){ setTimeout(function(){
+ var R=window.RESULT;
+ try{
+  newLeague(30,'KC',{league:'nfl',rules:{}}); boot();
+  var t=ut();
+  // hold record + fan morale constant; measure pure stadium effect
+  function snap(){ return {q:t.stadium.quality, cap:t.stadium.cap, attPct:Math.round(ENG.attendancePct(t)*1000)/10,
+    profit:ENG.weeklyFinance(t,true).profit, att:ENG.weeklyFinance(t,true).att, fan:Math.round(t.fans.morale)}; }
+  R.before=snap();
+  t.cash=400;
+  buildStadium('upgrade'); R.afterUpgrade=snap();
+  buildStadium('new');     R.afterNew=snap();
+  // run a few winning weeks to see fan morale + attendance compound
+  for(var w=0;w<5 && G.phase==='regular';w++){ ensureWeekState();
+    var g=(G.schedule[G.week]||[]).find(x=>x.home==='KC'||x.away==='KC');
+    if(g){ var r=ENG.simGame(team(g.home),team(g.away),G.rules); var home=g.home==='KC'; if(home){r.hs=35;r.as=10;}else{r.as=35;r.hs=10;} G.pendingUserResult=r; }
+    G.weekGameDone=true; advanceWeek({force:true});
+  }
+  R.after5Wins=snap();
+  R.done=true;
+ }catch(e){ R.fatal=String(e); }
+ console.log('RESULT_BEGIN'+J(R)+'RESULT_END');
+},60);};
+</script></body></html>

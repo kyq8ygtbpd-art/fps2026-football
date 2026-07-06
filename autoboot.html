@@ -1,0 +1,4 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body>
+<script src="data.js"></script><script src="engine.js"></script><script src="app.js"></script>
+<script>window.onload=()=>{ try{ newLeague(30,'BUF'); for(let i=0;i<9;i++) advanceWeek(); VIEW=(location.hash||'#standings').slice(1); render(); }catch(e){document.body.innerHTML='ERR '+e.message+'<pre>'+e.stack+'</pre>';} };</script>
+</body></html>
