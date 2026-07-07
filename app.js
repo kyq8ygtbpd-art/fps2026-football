@@ -8114,13 +8114,40 @@ function cgSnap(offOrDefKey){
   const _readTxt = cgReadText(act, r);
   const _animating = !(CG.autoAdv || CG._auto);   // mirrors cgStartPlayView logic
   // ---- turnover ----
-  if(r.turnover){ CG._bad=cgUserOnO(); CG.mom=ENG.clamp(CG.mom+(cgUserOnO()?-26:26),-100,100);
+  if(r.turnover){
+    const defSide=CG.poss==='h'?'a':'h';                 // the team that just took the ball away
+    const defScores=(defSide===CG.userSide);
+    // ---- PICK SIX / SCOOP-AND-SCORE: the takeaway goes to the house — the DEFENSE scores 6,
+    // kicks the PAT, and KICKS OFF. (This used to narrate "PICK SIX!" but award nothing and hand
+    // the ball to the offense, backed up wherever the pass was thrown — the reported bug.)
+    if(_dr && _dr.pick6 && r.result==='INT'){
+      if(defSide==='h')CG.hs+=6; else CG.as+=6;
+      const scorer=CG._credit; if(scorer) cgTally(scorer,{dtd:1});   // defensive TD credited to the man who took it back
+      CG.mom=ENG.clamp(CG.mom+(defScores?26:-26),-100,100); CG._good=defScores; CG._bad=!defScores;
+      CG._moment={kind:'TD',label:'PICK SIX!!',c:'#46d39a',crowd:defSide==='h'?'The home crowd erupts.':'The home crowd goes quiet.',good:defScores};
+      cgCrowdBurst('td'); CG._animMs=3600;
+      const _p6Color=cgColor('int', def.abbr); cgEnrichColor('int',off,def,r,line);
+      line+=' '+cgScoreCall();
+      CG.log.unshift(`<b>${cgTeam(defSide).abbr} DEF TD!</b> ${line}`);
+      cgBurn('INT'); cgSetLastSnap(pre,off,def,offKey,defKey,r,line,false);
+      CG.pat=defSide; if(defSide!==CG.userSide) autoPAT();   // AI auto-kicks + kicks off; the user gets the XP/2-pt choice, then kicks off
+      if(_animating){ CG._pendingResult={text:line,color:_p6Color,moment:CG._moment,good:CG._good,bad:CG._bad}; CG.lastText=_preSnapTxt; CG.lastColor=''; CG._moment=null; CG._good=false; CG._bad=false; }
+      else { CG.lastText=line; CG.lastColor=_p6Color; }
+      return cgAfter();
+    }
+    // ---- normal turnover: possession flips; the defense takes over at the spot of the takeaway ----
+    CG._bad=cgUserOnO(); CG.mom=ENG.clamp(CG.mom+(cgUserOnO()?-26:26),-100,100);
     CG._moment=cgMoment(r.result==='INT'?'INT':'FUM');
     cgCrowdBurst('turnover');
     const _resColor=cgColor(r.result==='INT'?'int':'fum', def.abbr); cgEnrichColor(r.result==='INT'?'int':'fum',off,def,r,line); CG.log.unshift(`<b>${off.abbr}</b> · ${line}`);
-    const next=CG.poss==='h'?'a':'h';
-    CG.ballOn=ENG.clamp(CG.ballOn + (r.result==='INT'?ENG.ri(0,18):Math.max(0,r.yards||0)),1,99);
-    cgChangePoss(`Turnover — ${cgTeam(next).abbr} take over.`);
+    const next=defSide;
+    // Field position from the INTERCEPTING team's view. INT: caught downfield of the throw, returned a
+    // little (net = defense takes over roughly at the offense's spot, deeper picks pin them back, but
+    // never inside their own 1 on a plain return). Fumble: recovered at the spot.
+    if(r.result==='INT'){ const takeover=ENG.clamp(100-CG.ballOn + (_dr&&_dr.returnYards?Math.round(_dr.returnYards*0.6):ENG.ri(0,8)), 1, 99);
+      CG.poss=next; CG.ballOn=Math.max(takeover,2); CG.down=1; CG.toGo=10; cgDriveBreather();
+      CG.log.unshift(`Turnover — ${cgTeam(next).abbr} take over at ${CG.ballOn<=50?'their own '+CG.ballOn:'the '+(100-CG.ballOn)}.`);
+    } else { CG.ballOn=ENG.clamp(CG.ballOn+Math.max(0,r.yards||0),1,99); cgChangePoss(`Turnover — ${cgTeam(next).abbr} take over.`); }
     cgBurn(r.result); cgSetLastSnap(pre,off,def,offKey,defKey,r,line,false);
     if(_animating){ CG._pendingResult={text:line,color:_resColor,moment:CG._moment,good:CG._good,bad:CG._bad}; CG.lastText=_preSnapTxt; CG.lastColor=''; CG._moment=null; CG._good=false; CG._bad=false; }
     else { CG.lastText=line; CG.lastColor=_resColor; }
