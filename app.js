@@ -5686,7 +5686,9 @@ function resolvePlay(offKey, defKey){
   // and the AI scoring ON you are all untouched. Change the default below, or set window.FPS_COACH_SCORE_LIFT
   // in the browser console to retune live (e.g. FPS_COACH_SCORE_LIFT=1.0 turns the nudge off).
   const coachLift=(!CG._auto && CG.poss===CG.userSide) ? ((typeof window!=='undefined'&&window.FPS_COACH_SCORE_LIFT)||1.08) : 1;
-  const r=simPlay(off,def,offKey,defKey,{mom:CG.mom*(CG.poss===CG.userSide?1:-1), wx:WX[CG.weather], hfa, read, down:CG.down, toGo:CG.toGo, q:CG.q, offFatigue:offFat, defFatigue:defFat, coachLift});
+  // rz + toGoal mirror the calibrated league-sim path: a play can never gain more field than exists
+  // (no more "38-yard TD" from the 8 on goal-to-go), and red-zone compression applies to coached snaps too
+  const r=simPlay(off,def,offKey,defKey,{mom:CG.mom*(CG.poss===CG.userSide?1:-1), wx:WX[CG.weather], hfa, read, down:CG.down, toGo:CG.toGo, q:CG.q, offFatigue:offFat, defFatigue:defFat, coachLift, rz:CG.ballOn>=80, toGoal:100-CG.ballOn});
   r.offKey=offKey; r.defKey=defKey; return r;
 }
 // AI play-calling (situational)
@@ -5907,6 +5909,8 @@ function cgPhysFlavor(r, carrier, target, off, def){
   if(!r.isPass && carrier && CG && CG.toGo<=2 && r.yards>=0){ const st=aOf(carrier,'ST'), dSt=(D.dl&&aOf(D.dl,'ST'))||(D.lb&&aOf(D.lb,'ST'))||77;
     if(r.yards<CG.toGo && st-dSt>=4 && ENG.rng()<(st-dSt)*0.035){ r.yards=CG.toGo; r._churn=true; }
     else if(r.yards>=CG.toGo && dSt-st>=4 && ENG.rng()<(dSt-st)*0.03){ r.yards=Math.max(0, CG.toGo-1); } }
+  // the field ends at the goal line — no flavor bonus may extend a play past the yards that exist
+  if(CG && r.yards>0) r.yards=Math.min(r.yards, 100-CG.ballOn);
 }
 function cgRadio(){ return typeof TTS!=='undefined' && TTS.cfg && TTS.cfg().era!=='modern'; }   // golden-age radio is the default voice
 function cgRadioDir(){ if(!CG) return 'right to left'; return ((CG.q + (CG.poss==='h'?0:1)) % 2) ? 'right to left' : 'left to right'; }
